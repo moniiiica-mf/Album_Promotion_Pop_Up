@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Album Promotion – Hand Gesture Experience</title>
+  <style>
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #000;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    /* ── Camera / Canvas ── */
+    #videoContainer {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    #video {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scaleX(-1);
+      min-width: 100%;
+      min-height: 100%;
+      width: auto;
+      height: auto;
+    }
+
+    #canvas {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* ── Loading Screen ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      font-size: 18px;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(6px);
+    }
+
+    .loading-spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid rgba(255, 255, 255, 0.2);
+      border-top-color: #4a9eff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Debug Panel ── */
+    #debugPanel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      background: rgba(0, 0, 0, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 12px;
+      font-family: 'Courier New', monospace;
+      max-width: 360px;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+    }
+
+    .debug-hand {
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    .debug-hand:last-child {
+      margin-bottom: 0;
+      border-bottom: none;
+    }
+
+    .debug-label {
+      color: #4a9eff;
+      font-weight: bold;
+      margin-bottom: 6px;
+    }
+
+    .debug-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 2px 0;
+    }
+
+    .debug-key  { color: #888; }
+    .debug-value { color: #fff; font-weight: bold; }
+
+    .gesture-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: rgba(74, 158, 255, 0.25);
+      border-radius: 4px;
+      margin-right: 4px;
+      font-size: 11px;
+    }
+
+    /* ── Swipe Flash ── */
+    .swipe-flash {
+      position: fixed;
+      pointer-events: none;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 48px;
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: 3px;
+      text-shadow:
+        0 0 20px rgba(74, 158, 255, 1),
+        0 0 40px rgba(74, 158, 255, 0.8),
+        0 0 60px rgba(74, 158, 255, 0.6);
+      animation: flash 0.6s ease-out forwards;
+    }
+
+    .swipe-flash.left  { left: 0; top: 0; bottom: 0; width: 200px; background: linear-gradient(to right,  rgba(74,158,255,0.7), rgba(74,158,255,0.4), transparent); box-shadow: inset -20px 0 60px rgba(74,158,255,0.5); }
+    .swipe-flash.right { right: 0; top: 0; bottom: 0; width: 200px; background: linear-gradient(to left,  rgba(74,158,255,0.7), rgba(74,158,255,0.4), transparent); box-shadow: inset  20px 0 60px rgba(74,158,255,0.5); }
+    .swipe-flash.up    { top: 0; left: 0; right: 0; height: 200px; background: linear-gradient(to bottom, rgba(74,158,255,0.7), rgba(74,158,255,0.4), transparent); box-shadow: inset 0 -20px 60px rgba(74,158,255,0.5); }
+    .swipe-flash.down  { bottom: 0; left: 0; right: 0; height: 200px; background: linear-gradient(to top,  rgba(74,158,255,0.7), rgba(74,158,255,0.4), transparent); box-shadow: inset 0  20px 60px rgba(74,158,255,0.5); }
+
+    @keyframes flash {
+      0%   { opacity: 1; transform: scale(1); }
+      50%  { opacity: 0.9; transform: scale(1.05); }
+      100% { opacity: 0; transform: scale(1.1); }
+    }
+
+    /* ── Tap Orb ── */
+    #tapOrb {
+      position: fixed;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, #3b82f6, #1e40af 80%);
+      box-shadow: 0 0 40px rgba(59, 130, 246, 0.7);
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, -50%) scale(0.8);
+      transition: transform 0.25s ease, opacity 0.35s ease;
+      z-index: 60;
+    }
+
+    #tapOrb.active {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1.4);
+    }
+
+    /* ── Demo Overlay (pinch rings, etc.) ── */
+    #demoOverlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Camera feed -->
+  <div id="videoContainer">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <!-- Debug panel -->
+  <div id="debugPanel">
+    <div class="debug-label">🎯 Hand Tracking Metrics</div>
+    <div id="debugContent"></div>
+  </div>
+
+  <!-- Visual effects layer -->
+  <div id="demoOverlay"></div>
+  <div id="tapOrb"></div>
+
+  <!-- Loading screen -->
+  <div id="loading">
+    <div class="loading-spinner"></div>
+    <div>Initializing hand tracking…</div>
+  </div>
+
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <script>
+  // ─────────────────────────────────────────────
+  // CONFIG
+  // ─────────────────────────────────────────────
+  const ENABLE_PINCH_VISUALS = true;
+
+  const CONFIG = {
+    mirrorVideo:           true,
+    maxHands:              2,
+    minConfidence:         0.7,
+    smoothFrames:          8,
+    lostTimeoutMs:         220,
+    swipeSpeedPxPerSec:    800,
+    swipeAngleToleranceDeg: 45,
+    pinchPx:               55,
+    pinchHoldMs:           220,
+    doubleTapMinMs:        100,
+    doubleTapMaxMs:        500,
+    overlapPx:             140,
+    draw: { skeleton: true, landmarks: true, labels: true }
+  };
+
+  const TAP = {
+    minMovement:  0.015,
+    maxMovement:  0.18,
+    cooldownMs:   260,
+    maxLateralPx: 200,
+    tapWindowMs:  300,
+    doubleMinMs:  110,
+    doubleMaxMs:  420
+  };
+
+  // MediaPipe landmark indices
+  const LM = {
+    WRIST: 0,
+    THUMB_CMC: 1, THUMB_MCP: 2, THUMB_IP: 3, THUMB_TIP: 4,
+    INDEX_MCP: 5, INDEX_PIP: 6, INDEX_DIP: 7, INDEX_TIP: 8,
+    MIDDLE_MCP: 9, MIDDLE_PIP: 10, MIDDLE_DIP: 11, MIDDLE_TIP: 12,
+    RING_MCP: 13, RING_PIP: 14, RING_DIP: 15, RING_TIP: 16,
+    PINKY_MCP: 17, PINKY_PIP: 18, PINKY_DIP: 19, PINKY_TIP: 20
+  };
+
+  const HAND_CONNECTIONS = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [0,9],[9,10],[10,11],[11,12],
+    [0,13],[13,14],[14,15],[15,16],
+    [0,17],[17,18],[18,19],[19,20],
+    [5,9],[9,13],[13,17]
+  ];
+
+  // ─────────────────────────────────────────────
+  // GLOBAL STATE
+  // ─────────────────────────────────────────────
+  const state = {
+    hands:            new Map(),
+    lastFrameTime:    0,
+    cameraActive:     false,
+    useFallback:      false,
+    mousePos:         { x: 0.5, y: 0.5 },
+    emaCache:         new Map(),
+    handsOverlapping: false,
+    videoNativeWidth:  0,
+    videoNativeHeight: 0,
+    videoDisplayWidth: 0,
+    videoDisplayHeight: 0,
+    dpr:              1
+  };
+
+  // ─────────────────────────────────────────────
+  // EVENT BUS
+  // ─────────────────────────────────────────────
+  window.HandInput = (() => {
+    const listeners = new Map();
+    return {
+      on(type, fn)  { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); },
+      off(type, fn) { listeners.has(type) && listeners.get(type).delete(fn); },
+      emit(type, data) { listeners.has(type) && listeners.get(type).forEach(fn => fn(data)); }
+    };
+  })();
+
+  // ─────────────────────────────────────────────
+  // MATH HELPERS
+  // ─────────────────────────────────────────────
+  function ema(value, key, alpha = 0.3) {
+    if (!state.emaCache.has(key)) { state.emaCache.set(key, value); return value; }
+    const s = alpha * value + (1 - alpha) * state.emaCache.get(key);
+    state.emaCache.set(key, s);
+    return s;
+  }
+
+  function dist3D(a, b) {
+    return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + ((a.z||0)-(b.z||0))**2);
+  }
+
+  function dist2D(a, b) {
+    return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+  }
+
+  function pinchPx(thumb, index, w, h) {
+    return Math.sqrt(((thumb.x-index.x)*w)**2 + ((thumb.y-index.y)*h)**2);
+  }
+
+  function sub(a, b)    { return { x: a.x-b.x, y: a.y-b.y, z: (a.z||0)-(b.z||0) }; }
+  function dot(u, v)    { return u.x*v.x + u.y*v.y + (u.z||0)*(v.z||0); }
+  function mag(u)       { return Math.sqrt(u.x*u.x + u.y*u.y + (u.z||0)**2); }
+  function cosAngle(u, v) { const m = mag(u)*mag(v); return m ? dot(u,v)/m : 1; }
+
+  function calcAngleDeg(p1, p2, p3) {
+    const v1 = sub(p1, p2), v2 = sub(p3, p2);
+    const d = dot(v1,v2) / (mag(v1)*mag(v2));
+    return Math.acos(Math.max(-1, Math.min(1, d))) * 180 / Math.PI;
+  }
+
+  function angleDeg(vx, vy) { return Math.atan2(vy, vx) * 180 / Math.PI; }
+
+  function normalizeCoords(x, y, w, h, mirror = true) {
+    const nx = mirror ? 1 - x : x;
+    return { nx, ny: y, x: nx * w, y: y * h };
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.arcTo(x+w, y, x+w, y+h, r);
+    ctx.arcTo(x+w, y+h, x, y+h, r);
+    ctx.arcTo(x, y+h, x, y, r);
+    ctx.arcTo(x, y, x+w, y, r);
+    ctx.closePath();
+  }
+
+  function computeVelocity(prev, curr, dt) {
+    if (!prev || dt === 0) return { vx: 0, vy: 0, speed: 0 };
+    const vx = (curr.x - prev.x) / dt * 1000;
+    const vy = (curr.y - prev.y) / dt * 1000;
+    return { vx, vy, speed: Math.sqrt(vx*vx + vy*vy) };
+  }
+
+  // ─────────────────────────────────────────────
+  // FINGER / HAND ANALYSIS
+  // ─────────────────────────────────────────────
+  function getPalmScale(lms) {
+    return dist2D(lms[LM.INDEX_MCP], lms[LM.PINKY_MCP]);
+  }
+
+  function distNorm(p, q, scale) {
+    return dist2D(p, q) / (scale || 1);
+  }
+
+  function fingerExtScore(mcp, pip, dip, tip) {
+    const c = Math.max(-1, Math.min(1, cosAngle(sub(pip,mcp), sub(tip,dip))));
+    return (c + 1) / 2;
+  }
+
+  function isFingerExtended(lms, tipIdx, dipIdx, pipIdx, mcpIdx) {
+    if (dipIdx !== null) {
+      const pip = calcAngleDeg(lms[mcpIdx], lms[pipIdx], lms[dipIdx]);
+      const dip = calcAngleDeg(lms[pipIdx], lms[dipIdx], lms[tipIdx]);
+      return pip > 140 && dip > 140;
+    }
+    return calcAngleDeg(lms[mcpIdx], lms[pipIdx], lms[tipIdx]) > 130;
+  }
+
+  function fingerCurl(lms, tipIdx, dipIdx, pipIdx, mcpIdx) {
+    if (dipIdx !== null) {
+      const pip = calcAngleDeg(lms[mcpIdx], lms[pipIdx], lms[dipIdx]);
+      const dip = calcAngleDeg(lms[pipIdx], lms[dipIdx], lms[tipIdx]);
+      return 1 - ((pip + dip) / 2 / 180);
+    }
+    return 1 - (calcAngleDeg(lms[mcpIdx], lms[pipIdx], lms[tipIdx]) / 180);
+  }
+
+  function getHandSize(lms) {
+    return {
+      palmSize:   dist3D(lms[LM.WRIST], lms[LM.MIDDLE_MCP]),
+      handLength: dist3D(lms[LM.WRIST], lms[LM.MIDDLE_TIP])
+    };
+  }
+
+  function calcHandSpread(lms, hs) {
+    const spread =
+      dist3D(lms[LM.THUMB_TIP], lms[LM.INDEX_TIP]) +
+      dist3D(lms[LM.INDEX_TIP], lms[LM.MIDDLE_TIP]) +
+      dist3D(lms[LM.MIDDLE_TIP], lms[LM.RING_TIP]) +
+      dist3D(lms[LM.RING_TIP], lms[LM.PINKY_TIP]);
+    return Math.min(1, spread / (hs.handLength * 2));
+  }
+
+  function calcHandCurl(lms) {
+    return (
+      fingerCurl(lms, LM.INDEX_TIP,  LM.INDEX_DIP,  LM.INDEX_PIP,  LM.INDEX_MCP)  +
+      fingerCurl(lms, LM.MIDDLE_TIP, LM.MIDDLE_DIP, LM.MIDDLE_PIP, LM.MIDDLE_MCP) +
+      fingerCurl(lms, LM.RING_TIP,   LM.RING_DIP,   LM.RING_PIP,   LM.RING_MCP)   +
+      fingerCurl(lms, LM.PINKY_TIP,  LM.PINKY_DIP,  LM.PINKY_PIP,  LM.PINKY_MCP)
+    ) / 4;
+  }
+
+  function palmFacingUp(lms) {
+    const v1 = sub(lms[LM.INDEX_MCP], lms[LM.WRIST]);
+    const v2 = sub(lms[LM.PINKY_MCP], lms[LM.WRIST]);
+    const crossZ = v1.x*v2.y - v1.y*v2.x;
+    return ema(crossZ > 0 ? 1 : 0, 'palmFacing', 0.4) > 0.5;
+  }
+
+  function isThumbFolded(lms, palmScale) {
+    const tipToIndex = distNorm(lms[LM.THUMB_TIP], lms[LM.INDEX_MCP], palmScale);
+    const tipToWrist  = distNorm(lms[LM.THUMB_TIP], lms[LM.WRIST],    palmScale);
+    const curl = cosAngle(sub(lms[LM.THUMB_IP], lms[LM.THUMB_MCP]), sub(lms[LM.THUMB_TIP], lms[LM.THUMB_IP]));
+    return tipToIndex < 0.5 || tipToWrist < 0.8 || curl < 0.2;
+  }
+
+  function classifyFist(lms, w, h) {
+    const ps = getPalmScale(lms);
+    const eI = fingerExtScore(lms[LM.INDEX_MCP],  lms[LM.INDEX_PIP],  lms[LM.INDEX_DIP],  lms[LM.INDEX_TIP]);
+    const eM = fingerExtScore(lms[LM.MIDDLE_MCP], lms[LM.MIDDLE_PIP], lms[LM.MIDDLE_DIP], lms[LM.MIDDLE_TIP]);
+    const eR = fingerExtScore(lms[LM.RING_MCP],   lms[LM.RING_PIP],   lms[LM.RING_DIP],   lms[LM.RING_TIP]);
+    const eP = fingerExtScore(lms[LM.PINKY_MCP],  lms[LM.PINKY_PIP],  lms[LM.PINKY_DIP],  lms[LM.PINKY_TIP]);
+
+    const THR = 0.4;
+    const curledCount = [eI,eM,eR,eP].filter(e => e <= THR).length;
+
+    const palmCenter = {
+      x: (lms[LM.WRIST].x+lms[LM.INDEX_MCP].x+lms[LM.MIDDLE_MCP].x+lms[LM.RING_MCP].x+lms[LM.PINKY_MCP].x)/5,
+      y: (lms[LM.WRIST].y+lms[LM.INDEX_MCP].y+lms[LM.MIDDLE_MCP].y+lms[LM.RING_MCP].y+lms[LM.PINKY_MCP].y)/5
+    };
+    const tips = [lms[LM.INDEX_TIP], lms[LM.MIDDLE_TIP], lms[LM.RING_TIP], lms[LM.PINKY_TIP]];
+    const avgTipDist = tips.reduce((a,t) => a + distNorm(t, palmCenter, ps), 0) / 4;
+    const thumbFolded = isThumbFolded(lms, ps);
+
+    const isFist = curledCount >= 3 && thumbFolded && avgTipDist < 0.65;
+    const curlStrength = 1 - (eI+eM+eR+eP)/4;
+    const tightness    = Math.max(0, 1 - avgTipDist/0.65);
+    const confidence   = Math.max(0, Math.min(1, 0.5*curlStrength + 0.3*tightness + 0.2*(thumbFolded?1:0)));
+
+    return { isFist, confidence, extras: { extIndex:eI, extMiddle:eM, extRing:eR, extPinky:eP, avgTipDist, curledCount, thumbFolded } };
+  }
+
+  // ─────────────────────────────────────────────
+  // GESTURE RECOGNITION
+  // ─────────────────────────────────────────────
+  function recognizeGesture(hand, w, h) {
+    const lms = hand.landmarks;
+
+    const sI = fingerExtScore(lms[LM.INDEX_MCP],  lms[LM.INDEX_PIP],  lms[LM.INDEX_DIP],  lms[LM.INDEX_TIP]);
+    const sM = fingerExtScore(lms[LM.MIDDLE_MCP], lms[LM.MIDDLE_PIP], lms[LM.MIDDLE_DIP], lms[LM.MIDDLE_TIP]);
+    const sR = fingerExtScore(lms[LM.RING_MCP],   lms[LM.RING_PIP],   lms[LM.RING_DIP],   lms[LM.RING_TIP]);
+    const sP = fingerExtScore(lms[LM.PINKY_MCP],  lms[LM.PINKY_PIP],  lms[LM.PINKY_DIP],  lms[LM.PINKY_TIP]);
+
+    const looksLikePoint = sI > 0.62 && sM < 0.38 && sR < 0.38 && sP < 0.38;
+
+    const hs = getHandSize(lms);
+    const thumbExt  = isFingerExtended(lms, LM.THUMB_TIP,  null,         LM.THUMB_IP,   LM.THUMB_MCP);
+    const indexExt  = isFingerExtended(lms, LM.INDEX_TIP,  LM.INDEX_DIP,  LM.INDEX_PIP,  LM.INDEX_MCP);
+    const middleExt = isFingerExtended(lms, LM.MIDDLE_TIP, LM.MIDDLE_DIP, LM.MIDDLE_PIP, LM.MIDDLE_MCP);
+    const ringExt   = isFingerExtended(lms, LM.RING_TIP,   LM.RING_DIP,   LM.RING_PIP,   LM.RING_MCP);
+    const pinkyExt  = isFingerExtended(lms, LM.PINKY_TIP,  LM.PINKY_DIP,  LM.PINKY_PIP,  LM.PINKY_MCP);
+
+    const allExtended  = thumbExt && indexExt && middleExt && ringExt && pinkyExt;
+    const fourExtended = indexExt && middleExt && ringExt && pinkyExt;
+
+    const handSpread = calcHandSpread(lms, hs);
+    const handCurl   = calcHandCurl(lms);
+    const pd         = pinchPx(lms[LM.THUMB_TIP], lms[LM.INDEX_TIP], w, h);
+
+    const fistResult = classifyFist(lms, w, h);
+    hand.fistExtras    = fistResult.extras;
+
+    let gesture = 'Unknown', confidence = 0.5;
+
+    if (fistResult.isFist && fistResult.confidence >= 0.55) {
+      gesture = 'Fist'; confidence = Math.max(0.85, fistResult.confidence);
+    } else if (pd < CONFIG.pinchPx) {
+      gesture = 'Pinch'; confidence = Math.max(0.75, 1 - pd / CONFIG.pinchPx);
+    } else if ((allExtended || fourExtended) && handCurl < 0.35 && handSpread > 0.35) {
+      gesture = 'OpenPalm'; confidence = 0.92;
+    } else if (looksLikePoint) {
+      const nonIndexCurl = 1 - ((sM+sR+sP)/3);
+      gesture = 'Point'; confidence = Math.min(0.95, 0.55 + 0.45*Math.min(1,sI)*Math.max(0,nonIndexCurl));
+    } else if (!looksLikePoint && fistResult.extras) {
+      const ext = fistResult.extras;
+      const softOpen = [ext.extIndex,ext.extMiddle,ext.extRing,ext.extPinky].filter(e => e>0.4 && e<0.7).length;
+      if (softOpen >= 1 && ext.curledCount < 3) { gesture = 'PartialOpen'; confidence = 0.72; }
+    } else if (!looksLikePoint && handCurl < 0.50 && handSpread > 0.25 && !fistResult.isFist) {
+      gesture = 'PartialOpen'; confidence = 0.70;
+    }
+
+    hand.handSpread       = handSpread;
+    hand.handCurl         = handCurl;
+    hand.fingerCurls      = {
+      index:  fingerCurl(lms, LM.INDEX_TIP,  LM.INDEX_DIP,  LM.INDEX_PIP,  LM.INDEX_MCP),
+      middle: fingerCurl(lms, LM.MIDDLE_TIP, LM.MIDDLE_DIP, LM.MIDDLE_PIP, LM.MIDDLE_MCP),
+      ring:   fingerCurl(lms, LM.RING_TIP,   LM.RING_DIP,   LM.RING_PIP,   LM.RING_MCP),
+      pinky:  fingerCurl(lms, LM.PINKY_TIP,  LM.PINKY_DIP,  LM.PINKY_PIP,  LM.PINKY_MCP)
+    };
+    hand.fingerExtensions = { thumb:thumbExt, index:indexExt, middle:middleExt, ring:ringExt, pinky:pinkyExt };
+    hand.extensionScores  = { index:sI, middle:sM, ring:sR, pinky:sP };
+    hand.looksLikePoint   = looksLikePoint;
+    hand.fistDetected     = fistResult.isFist;
+    hand.fistConfidence   = fistResult.confidence;
+
+    if (!hand.gestureHistory) hand.gestureHistory = [];
+    hand.gestureHistory.push({ gesture, confidence, time: Date.now() });
+    hand.gestureHistory = hand.gestureHistory.filter(g => g.time > Date.now() - 350);
+
+    const counts = new Map();
+    hand.gestureHistory.forEach(g => counts.set(g.gesture, (counts.get(g.gesture)||0)+1));
+
+    let maxCount = 0, stableGesture = gesture, stableConf = confidence;
+    counts.forEach((count, g) => {
+      if (count > maxCount) {
+        maxCount = count; stableGesture = g;
+        const matches = hand.gestureHistory.filter(h => h.gesture === g);
+        stableConf = matches.reduce((s,h) => s+h.confidence, 0) / matches.length;
+      }
+    });
+
+    return maxCount < 2
+      ? { gesture, confidence, pinchDist: pd }
+      : { gesture: stableGesture, confidence: stableConf, pinchDist: pd };
+  }
+
+  // ─────────────────────────────────────────────
+  // SWIPE DETECTION
+  // ─────────────────────────────────────────────
+  function detectSwipe(hand, w, h) {
+    if (!hand.velocityHistory) hand.velocityHistory = [];
+    const { vx, vy, speed } = hand.velocity;
+    hand.velocityHistory.push({ vx, vy, speed, time: Date.now() });
+    hand.velocityHistory = hand.velocityHistory.filter(v => v.time > Date.now() - 500);
+
+    const peak = hand.velocityHistory.reduce((m,v) => v.speed>m.speed?v:m, { speed:0 });
+
+    if (peak.speed > CONFIG.swipeSpeedPxPerSec && peak.time > (hand.lastSwipeTime||0) + 500) {
+      const angle = angleDeg(peak.vx, peak.vy);
+      const tol   = CONFIG.swipeAngleToleranceDeg;
+      let dir = null;
+      if (Math.abs(angle) < tol) dir = 'right';
+      else if (Math.abs(angle-180) < tol || Math.abs(angle+180) < tol) dir = 'left';
+      else if (Math.abs(angle-90)  < tol) dir = 'down';
+      else if (Math.abs(angle+90)  < tol) dir = 'up';
+
+      if (dir) { hand.lastSwipeTime = Date.now(); return { direction: dir, speed: peak.speed }; }
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────
+  // TAP DETECTION
+  // ─────────────────────────────────────────────
+  function ensureTapState(hand) {
+    if (hand._tapInit) return;
+    hand._tapInit      = true;
+    hand.zRelBaseline  = 0;
+    hand.baselineSet   = false;
+    hand.cooldownUntil = 0;
+    hand.lastTapTime   = 0;
+    hand.tapMovement   = 0;
+    hand._tapArmed     = false;
+    hand.baselineTime  = 0;
+    hand.baselinePos   = { nx: 0, ny: 0 };
+  }
+
+  function relativeZ(hand) {
+    const lm  = hand.landmarks;
+    const tip  = lm[LM.INDEX_TIP];
+    const palm = (lm[LM.WRIST].z+lm[LM.INDEX_MCP].z+lm[LM.MIDDLE_MCP].z+lm[LM.RING_MCP].z+lm[LM.PINKY_MCP].z)/5;
+    return ema(-(tip.z - palm), `${hand.id}_zrel`, 0.6);
+  }
+
+  function detectTap(hand, w, h) {
+    ensureTapState(hand);
+    const now = Date.now();
+    const gap = now - (hand.lastTapTime || 0);
+    const allowDouble = hand.lastTapTime && gap >= TAP.doubleMinMs && gap <= TAP.doubleMaxMs;
+
+    if (now < hand.cooldownUntil && !allowDouble) return 0;
+    if (hand.gesture !== 'Point') {
+      hand.baselineSet = false; hand.tapMovement = 0; hand._tapArmed = false;
+      return 0;
+    }
+
+    const zRel = relativeZ(hand);
+
+    if (!hand.baselineSet) {
+      hand.zRelBaseline = zRel; hand.baselineSet = true;
+      hand.baselineTime = now; hand.baselinePos  = { nx: hand.palm.nx, ny: hand.palm.ny };
+      hand.tapMovement  = 0;   hand._tapArmed    = false;
+      return 0;
+    }
+
+    const movement = zRel - hand.zRelBaseline;
+    hand.tapMovement = movement;
+
+    if (now - hand.baselineTime > TAP.tapWindowMs) {
+      hand.zRelBaseline = zRel; hand.baselineTime = now;
+      hand.baselinePos  = { nx: hand.palm.nx, ny: hand.palm.ny };
+      hand._tapArmed    = false;
+      return 0;
+    }
+
+    const lateral = Math.sqrt(
+      ((hand.palm.nx - hand.baselinePos.nx)*w)**2 +
+      ((hand.palm.ny - hand.baselinePos.ny)*h)**2
+    );
+    if (lateral > TAP.maxLateralPx) {
+      hand.zRelBaseline = zRel; hand.baselineTime = now;
+      hand.baselinePos  = { nx: hand.palm.nx, ny: hand.palm.ny };
+      hand._tapArmed    = false;
+      return 0;
+    }
+
+    if (!hand._tapArmed && movement >= TAP.minMovement && movement <= TAP.maxMovement) {
+      hand._tapArmed = true;
+    }
+
+    if (hand._tapArmed && movement >= TAP.minMovement && movement <= TAP.maxMovement) {
+      hand._tapArmed  = false;
+      hand.baselineSet = false;
+      hand.cooldownUntil = now + TAP.cooldownMs;
+      let count = 1;
+      if (hand.lastTapTime && gap >= TAP.doubleMinMs && gap <= TAP.doubleMaxMs) {
+        count = 2; hand.lastTapTime = 0;
+      } else {
+        hand.lastTapTime = now;
+      }
+      return count;
+    }
+
+    if (hand._tapArmed && movement > TAP.maxMovement) hand._tapArmed = false;
+    if (!hand._tapArmed && movement <= TAP.minMovement * 0.4) {
+      hand.zRelBaseline = zRel; hand.baselineTime = now;
+      hand.baselinePos  = { nx: hand.palm.nx, ny: hand.palm.ny };
+    }
+
+    return 0;
+  }
+
+  // ─────────────────────────────────────────────
+  // PINCH & OVERLAP DETECTION
+  // ─────────────────────────────────────────────
+  function detectPinch(hand, pd) {
+    if (pd < CONFIG.pinchPx && !hand.pinching) {
+      hand.pinching = true; hand.pinchStartTime = Date.now(); return 'start';
+    }
+    if (pd < CONFIG.pinchPx && hand.pinching) {
+      return Date.now() - hand.pinchStartTime > CONFIG.pinchHoldMs ? 'hold' : null;
+    }
+    if (pd >= CONFIG.pinchPx && hand.pinching) {
+      hand.pinching = false; return 'end';
+    }
+    return null;
+  }
+
+  function detectOverlap(hands) {
+    if (hands.length !== 2) return null;
+    const [h1, h2] = hands;
+    const overlapping = dist2D({ x:h1.palm.x, y:h1.palm.y }, { x:h2.palm.x, y:h2.palm.y }) < CONFIG.overlapPx;
+    if (overlapping && !state.handsOverlapping)  { state.handsOverlapping = true;  return 'enter'; }
+    if (!overlapping && state.handsOverlapping) { state.handsOverlapping = false; return 'leave'; }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────
+  // HAND TRACKING STATE MANAGEMENT
+  // ─────────────────────────────────────────────
+  function updateHands(results, dt) {
+    const newHands = new Map();
+    const w = state.videoDisplayWidth || canvas.width;
+    const h = state.videoDisplayHeight || canvas.height;
+
+    if (results.multiHandLandmarks?.length > 0) {
+      results.multiHandLandmarks.forEach((landmarks, idx) => {
+        const handedness = results.multiHandedness[idx].label;
+        const wrist      = landmarks[LM.WRIST];
+        const norm       = normalizeCoords(wrist.x, wrist.y, w, h, CONFIG.mirrorVideo);
+
+        let handId = null;
+        for (const [id, existing] of state.hands) {
+          if (existing.handedness === handedness && dist2D(norm, existing.palm) < 100) {
+            handId = id; break;
+          }
+        }
+        if (!handId) handId = `${handedness}_${Date.now()}`;
+
+        const prev     = state.hands.get(handId);
+        const vel      = prev ? computeVelocity(prev.palm, norm, dt) : { vx:0, vy:0, speed:0 };
+        const smoothVx = ema(vel.vx, `${handId}_vx`, 0.5);
+        const smoothVy = ema(vel.vy, `${handId}_vy`, 0.5);
+        const avgZ     = landmarks.reduce((s,l) => s+l.z, 0) / landmarks.length;
+
+        const hand = {
+          id: handId, handedness, landmarks,
+          palm:     norm,
+          velocity: { vx:smoothVx, vy:smoothVy, speed: Math.sqrt(smoothVx**2+smoothVy**2) },
+          z:        avgZ,
+          lastSeen: Date.now(),
+          gestureHistory:      prev?.gestureHistory      || [],
+          velocityHistory:     prev?.velocityHistory     || [],
+          tapHistory:          prev?.tapHistory          || [],
+          pinching:            prev?.pinching            || false,
+          pinchStartTime:      prev?.pinchStartTime      || 0,
+          lastSwipeTime:       prev?.lastSwipeTime       || 0,
+          lastGestureEmitTime: prev?.lastGestureEmitTime || 0
+        };
+
+        const { gesture, confidence, pinchDist } = recognizeGesture(hand, w, h);
+        hand.gesture = gesture; hand.gestureConfidence = confidence; hand.pinchDist = pinchDist;
+
+        const swipe = detectSwipe(hand, w, h);
+        if (swipe) HandInput.emit('swipe', { direction:swipe.direction, speed:swipe.speed, handedness, time:Date.now() });
+
+        const tapCount = detectTap(hand, w, h);
+        if (tapCount > 0) HandInput.emit('tap', { count:tapCount, nx:norm.nx, ny:norm.ny, handedness, time:Date.now() });
+
+        const pinchState = detectPinch(hand, pinchDist);
+        if (pinchState) HandInput.emit('pinch', { state:pinchState, distance:pinchDist, nx:norm.nx, ny:norm.ny, handedness, time:Date.now() });
+
+        HandInput.emit('handmove', { nx:norm.nx, ny:norm.ny, vx:smoothVx, vy:smoothVy, speed:hand.velocity.speed, z:avgZ, handedness, time:Date.now() });
+
+        if (confidence >= CONFIG.minConfidence) {
+          if (Date.now() - hand.lastGestureEmitTime > 200) {
+            HandInput.emit('gesture', { name:gesture, confidence, handedness, time:Date.now() });
+            hand.lastGestureEmitTime = Date.now();
+          }
+          if (prev && prev.gesture !== gesture) {
+            HandInput.emit('gesturechange', { from:prev.gesture, to:gesture, confidence, handedness, time:Date.now() });
+          }
+        }
+
+        newHands.set(handId, hand);
+      });
+    }
+
+    for (const [id, hand] of state.hands) {
+      if (!newHands.has(id) && Date.now() - hand.lastSeen < CONFIG.lostTimeoutMs) {
+        newHands.set(id, hand);
+      }
+    }
+
+    state.hands = newHands;
+
+    const handsArr = Array.from(state.hands.values());
+    const overlapState = detectOverlap(handsArr);
+    if (overlapState) {
+      const d = handsArr.length === 2 ? dist2D({ x:handsArr[0].palm.x, y:handsArr[0].palm.y }, { x:handsArr[1].palm.x, y:handsArr[1].palm.y }) : 0;
+      HandInput.emit('overlap', { state:overlapState, distance:d, time:Date.now() });
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // DRAWING
+  // ─────────────────────────────────────────────
+  const FINGER_COLORS = {
+    thumb:  'rgba(255,107,107,0.8)',
+    index:  'rgba(74,255,74,0.8)',
+    middle: 'rgba(74,158,255,0.8)',
+    ring:   'rgba(255,74,255,0.8)',
+    pinky:  'rgba(255,170,74,0.8)',
+    palm:   'rgba(74,158,255,0.8)'
+  };
+
+  function connectionColor(start, end) {
+    if ((start>=1&&start<=4)||(end>=1&&end<=4)) return FINGER_COLORS.thumb;
+    if ((start>=5&&start<=8)||(end>=5&&end<=8)) return FINGER_COLORS.index;
+    if ((start>=9&&start<=12)||(end>=9&&end<=12)) return FINGER_COLORS.middle;
+    if ((start>=13&&start<=16)||(end>=13&&end<=16)) return FINGER_COLORS.ring;
+    if ((start>=17&&start<=20)||(end>=17&&end<=20)) return FINGER_COLORS.pinky;
+    return FINGER_COLORS.palm;
+  }
+
+  function landmarkColor(idx) {
+    if (idx === LM.WRIST) return '#ffff00';
+    if (idx>=1&&idx<=4)   return '#ff6b6b';
+    if (idx>=5&&idx<=8)   return '#4aff4a';
+    if (idx>=9&&idx<=12)  return '#4a9eff';
+    if (idx>=13&&idx<=16) return '#ff4aff';
+    return '#ffaa4a';
+  }
+
+  function drawHands(ctx) {
+    const vw = state.videoDisplayWidth || canvas.width;
+    const vh = state.videoDisplayHeight || canvas.height;
+    ctx.clearRect(0, 0, vw, vh);
+
+    for (const hand of state.hands.values()) {
+      const { landmarks, gesture, gestureConfidence } = hand;
+      const toPx     = lm => ({ x: lm.x*vw, y: lm.y*vh });
+      const toPxText = lm => ({ x: CONFIG.mirrorVideo ? vw - lm.x*vw : lm.x*vw, y: lm.y*vh });
+
+      ctx.save();
+      if (CONFIG.mirrorVideo) { ctx.translate(vw, 0); ctx.scale(-1, 1); }
+
+      // Skeleton
+      if (CONFIG.draw.skeleton) {
+        ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        HAND_CONNECTIONS.forEach(([s, e]) => {
+          const p1 = toPx(landmarks[s]), p2 = toPx(landmarks[e]);
+          ctx.strokeStyle = connectionColor(s, e);
+          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        });
+      }
+
+      // Landmarks
+      if (CONFIG.draw.landmarks) {
+        landmarks.forEach((lm, idx) => {
+          const { x, y } = toPx(lm);
+          const r = idx === LM.WRIST ? 8 : 5;
+          ctx.fillStyle = 'rgba(0,0,0,0.4)';
+          ctx.beginPath(); ctx.arc(x+1.5, y+1.5, r+0.5, 0, 2*Math.PI); ctx.fill();
+          ctx.fillStyle = landmarkColor(idx);
+          ctx.beginPath(); ctx.arc(x, y, r, 0, 2*Math.PI); ctx.fill();
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(x, y, r, 0, 2*Math.PI); ctx.stroke();
+        });
+      }
+
+      ctx.restore();
+
+      // Labels (non-mirrored)
+      if (CONFIG.draw.labels) {
+        landmarks.forEach((lm, idx) => {
+          const { x, y } = toPxText(lm);
+          ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
+          ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeText(idx, x+10, y-8);
+          ctx.fillStyle = '#fff'; ctx.fillText(idx, x+10, y-8);
+        });
+      }
+
+      // Gesture badge
+      if (CONFIG.draw.labels && gestureConfidence >= CONFIG.minConfidence) {
+        const { x, y } = toPxText(landmarks[LM.WRIST]);
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        roundRect(ctx, x-55, y+28, 110, 34, 6); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(gesture, x, y+48);
+        ctx.font = '12px sans-serif'; ctx.fillStyle = '#4aff4a';
+        ctx.fillText(`${(gestureConfidence*100).toFixed(0)}%`, x, y+62);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // DEBUG PANEL
+  // ─────────────────────────────────────────────
+  function updateDebugPanel() {
+    const content = document.getElementById('debugContent');
+    let html = '';
+
+    for (const hand of state.hands.values()) {
+      const ext = hand.fingerExtensions || {};
+      const c   = hand.fingerCurls      || {};
+      const s   = hand.extensionScores  || {};
+      const f   = hand.fistExtras        || {};
+
+      html += `<div class="debug-hand">
+        <div class="debug-label">${hand.handedness} Hand</div>
+        <div class="debug-row"><span class="debug-key">Gesture:</span><span class="debug-value gesture-badge">${hand.gesture} (${(hand.gestureConfidence*100).toFixed(0)}%)</span></div>
+        <div class="debug-row"><span class="debug-key">Palm:</span><span class="debug-value">(${hand.palm.nx.toFixed(3)}, ${hand.palm.ny.toFixed(3)})</span></div>
+        <div class="debug-row"><span class="debug-key">Spread:</span><span class="debug-value" style="color:${hand.handSpread>0.35?'#4aff4a':'#ff4a4a'}">${hand.handSpread?.toFixed(3)??'N/A'}</span></div>
+        <div class="debug-row"><span class="debug-key">Curl:</span><span class="debug-value" style="color:${hand.handCurl<0.35?'#4aff4a':hand.handCurl>0.65?'#ff4a4a':'#ffaa4a'}">${hand.handCurl?.toFixed(3)??'N/A'}</span></div>
+        <div class="debug-row"><span class="debug-key">Fingers:</span><span class="debug-value">T:${ext.thumb?'✓':'✗'} I:${ext.index?'✓':'✗'} M:${ext.middle?'✓':'✗'} R:${ext.ring?'✓':'✗'} P:${ext.pinky?'✓':'✗'}</span></div>
+        <div class="debug-row"><span class="debug-key">Curls:</span><span class="debug-value" style="font-size:10px">I:${c.index?.toFixed(2)} M:${c.middle?.toFixed(2)} R:${c.ring?.toFixed(2)} P:${c.pinky?.toFixed(2)}</span></div>
+        <div class="debug-row"><span class="debug-key">Speed:</span><span class="debug-value">${hand.velocity.speed.toFixed(0)} px/s</span></div>
+        <div class="debug-row"><span class="debug-key">Depth (z):</span><span class="debug-value">${hand.z.toFixed(4)}</span></div>
+        <div class="debug-row"><span class="debug-key">Pinch:</span><span class="debug-value">${hand.pinchDist?.toFixed(1)} px</span></div>
+        <div class="debug-row"><span class="debug-key">Fist:</span><span class="debug-value" style="color:${hand.fistDetected?'#4aff4a':'#ff4a4a'}">${hand.fistDetected?'YES':'NO'} (${(hand.fistConfidence*100)?.toFixed(0)}%)</span></div>
+        <div class="debug-row"><span class="debug-key">ExtScore:</span><span class="debug-value" style="font-size:10px">I:${s.index?.toFixed(2)} M:${s.middle?.toFixed(2)} R:${s.ring?.toFixed(2)} P:${s.pinky?.toFixed(2)}</span></div>
+        <div class="debug-row"><span class="debug-key">Point:</span><span class="debug-value" style="color:${hand.looksLikePoint?'#4aff4a':'#888'}">${hand.looksLikePoint?'✓ YES':'✗ NO'}</span></div>
+        ${hand._tapInit ? `
+        <div class="debug-row"><span class="debug-key">Tap Armed:</span><span class="debug-value" style="color:${hand._tapArmed?'#4aff4a':'#888'}">${hand._tapArmed?'🎯 YES':'⏳ NO'}</span></div>
+        <div class="debug-row"><span class="debug-key">Tap Move:</span><span class="debug-value">${hand.tapMovement?.toFixed(4)}</span></div>
+        ` : ''}
+      </div>`;
+    }
+
+    content.innerHTML = state.hands.size === 0
+      ? '<div style="color:#888;margin-top:10px">No hands detected</div>'
+      : html;
+  }
+
+  // ─────────────────────────────────────────────
+  // VISUAL EFFECTS
+  // ─────────────────────────────────────────────
+  const pinchRings = [];
+
+  function updateEffects() {
+    const overlay = document.getElementById('demoOverlay');
+    const now = Date.now();
+    const alive = pinchRings.filter(r => now - r.time < 1000);
+    pinchRings.length = 0; pinchRings.push(...alive);
+
+    overlay.innerHTML = pinchRings.map(r => {
+      const age  = now - r.time;
+      const opac = 1 - age/1000;
+      const sc   = 1 + age/500;
+      return `<div style="position:fixed;left:${r.x}px;top:${r.y}px;width:${40*sc}px;height:${40*sc}px;border:3px solid rgba(255,74,158,${opac});border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;"></div>`;
+    }).join('');
+  }
+
+  // Swipe flash
+  HandInput.on('swipe', ({ direction }) => {
+    const labels = { left:'← SWIPE LEFT', right:'SWIPE RIGHT →', up:'↑ SWIPE UP', down:'↓ SWIPE DOWN' };
+    const el = document.createElement('div');
+    el.className = `swipe-flash ${direction}`;
+    el.textContent = labels[direction] || '';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 600);
+  });
+
+  // Tap orb
+  const tapOrb = document.getElementById('tapOrb');
+  let hideOrbTimeout;
+
+  HandInput.on('tap', ({ nx, ny, count }) => {
+    const rect = canvas.getBoundingClientRect();
+    tapOrb.style.left = `${rect.left + nx*rect.width}px`;
+    tapOrb.style.top  = `${rect.top  + ny*rect.height}px`;
+    tapOrb.classList.remove('active');
+    void tapOrb.offsetWidth;
+    tapOrb.classList.add('active');
+    clearTimeout(hideOrbTimeout);
+    hideOrbTimeout = setTimeout(() => tapOrb.classList.remove('active'), 500);
+  });
+
+  // Pinch rings
+  HandInput.on('pinch', ({ state: ps, nx, ny }) => {
+    if (!ENABLE_PINCH_VISUALS || ps !== 'start') return;
+    const rect = canvas.getBoundingClientRect();
+    pinchRings.push({ x: rect.left + nx*rect.width, y: rect.top + ny*rect.height, time: Date.now() });
+  });
+
+  // ─────────────────────────────────────────────
+  // MOUSE / TOUCH FALLBACK
+  // ─────────────────────────────────────────────
+  function setupFallback() {
+    let mouseDown = false, lastMouseMove = 0, lastClickTime = 0;
+
+    document.addEventListener('mousemove', e => {
+      if (!state.useFallback) return;
+      const now = Date.now();
+      const vel = computeVelocity(state.mousePos, { x: e.clientX, y: e.clientY }, now - lastMouseMove);
+      state.mousePos = { x: e.clientX/window.innerWidth, y: e.clientY/window.innerHeight };
+      lastMouseMove  = now;
+      HandInput.emit('handmove', { nx: state.mousePos.x, ny: state.mousePos.y, ...vel, z:0, handedness:'Mouse', time:now });
+
+      if (mouseDown && vel.speed > CONFIG.swipeSpeedPxPerSec) {
+        const angle = angleDeg(vel.vx, vel.vy);
+        const tol   = CONFIG.swipeAngleToleranceDeg;
+        let dir = null;
+        if (Math.abs(angle) < tol) dir = 'right';
+        else if (Math.abs(angle-180)<tol||Math.abs(angle+180)<tol) dir = 'left';
+        else if (Math.abs(angle-90)<tol)  dir = 'down';
+        else if (Math.abs(angle+90)<tol)  dir = 'up';
+        if (dir) HandInput.emit('swipe', { direction:dir, speed:vel.speed, handedness:'Mouse', time:now });
+      }
+    });
+
+    document.addEventListener('mousedown', () => mouseDown = true);
+    document.addEventListener('mouseup',   () => mouseDown = false);
+
+    document.addEventListener('click', e => {
+      if (!state.useFallback) return;
+      const now = Date.now(), gap = now - lastClickTime;
+      HandInput.emit('tap', {
+        count: gap<CONFIG.doubleTapMaxMs&&gap>CONFIG.doubleTapMinMs ? 2 : 1,
+        nx: e.clientX/window.innerWidth, ny: e.clientY/window.innerHeight,
+        handedness: 'Mouse', time: now
+      });
+      lastClickTime = now;
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // CAMERA & MEDIAPIPE INIT
+  // ─────────────────────────────────────────────
+  const video  = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx    = canvas.getContext('2d');
+
+  async function setupCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'user', width:1280, height:720 } });
+      video.srcObject = stream;
+      await video.play();
+      await new Promise(res => video.readyState >= 2 ? res() : video.addEventListener('loadedmetadata', res, { once:true }));
+
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const vpW = window.innerWidth, vpH = window.innerHeight;
+      const vAspect = vw/vh, vpAspect = vpW/vpH;
+      const dW = vAspect > vpAspect ? vpH*vAspect : vpW;
+      const dH = vAspect > vpAspect ? vpH          : vpW/vAspect;
+      const dpr = window.devicePixelRatio || 1;
+
+      Object.assign(state, { videoNativeWidth:vw, videoNativeHeight:vh, videoDisplayWidth:dW, videoDisplayHeight:dH, dpr, cameraActive:true, useFallback:false });
+
+      canvas.width  = Math.round(dW*dpr); canvas.height  = Math.round(dH*dpr);
+      canvas.style.width = dW+'px';        canvas.style.height = dH+'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return true;
+    } catch (err) {
+      console.error('Camera error:', err);
+      state.useFallback = true;
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth, h = window.innerHeight;
+      canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+      canvas.style.width = w+'px'; canvas.style.height = h+'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      Object.assign(state, { videoDisplayWidth:w, videoDisplayHeight:h, dpr });
+      alert('Camera access denied. Using mouse fallback mode.');
+      return false;
+    }
+  }
+
+  async function setupMediaPipe() {
+    const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({ maxNumHands:CONFIG.maxHands, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7 });
+    hands.onResults(results => {
+      const now = Date.now();
+      const dt  = state.lastFrameTime ? now - state.lastFrameTime : 16;
+      state.lastFrameTime = now;
+      updateHands(results, dt);
+      drawHands(ctx);
+      updateDebugPanel();
+      updateEffects();
+    });
+    return hands;
+  }
+
+  async function start() {
+    const cameraOk = await setupCamera();
+    if (cameraOk) {
+      const hands  = await setupMediaPipe();
+      const camera = new Camera(video, {
+        onFrame: async () => { await hands.send({ image: video }); },
+        width: 1280, height: 720
+      });
+      camera.start();
+    }
+    document.getElementById('loading').remove();
+  }
+
+  // ─────────────────────────────────────────────
+  // RESIZE
+  // ─────────────────────────────────────────────
+  window.addEventListener('resize', () => {
+    const dpr = window.devicePixelRatio || 1;
+    if (!state.cameraActive) {
+      const w = window.innerWidth, h = window.innerHeight;
+      canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+      canvas.style.width = w+'px'; canvas.style.height = h+'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      Object.assign(state, { videoDisplayWidth:w, videoDisplayHeight:h, dpr });
+    } else if (state.videoNativeWidth) {
+      const { videoNativeWidth:vw, videoNativeHeight:vh } = state;
+      const vpW = window.innerWidth, vpH = window.innerHeight;
+      const vA = vw/vh, vpA = vpW/vpH;
+      const dW = vA>vpA ? vpH*vA : vpW;
+      const dH = vA>vpA ? vpH    : vpW/vA;
+      Object.assign(state, { videoDisplayWidth:dW, videoDisplayHeight:dH, dpr });
+      canvas.width = Math.round(dW*dpr); canvas.height = Math.round(dH*dpr);
+      canvas.style.width = dW+'px'; canvas.style.height = dH+'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  });
+
+  // ─────────────────────────────────────────────
+  // BOOT
+  // ─────────────────────────────────────────────
+  setupFallback();
+  start();
+  </script>
+</body>
+</html>
