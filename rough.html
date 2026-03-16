@@ -307,7 +307,9 @@
       lostTimeoutMs: 220,
       swipeSpeedPxPerSec: 800,  // Lowered from 1400 for easier detection
       swipeAngleToleranceDeg: 45, // Increased tolerance
-      pinchPx: 55,  // Distance threshold for pinch detection
+      pinchPx: 55,  // Base distance threshold for pinch detection
+      pinchReleasePx: 70, // Hysteresis release threshold to reduce pinch flicker
+      pinchScaleFactor: 0.24, // Dynamic pinch threshold = palm width * factor (in px)
       pinchHoldMs: 220,
       tapDeltaZ: 0.08,  // Lowered for easier tap detection
       tapWindowMs: 250,  // Increased window
@@ -417,6 +419,20 @@
       const dx = (thumbTip.x - indexTip.x) * width;
       const dy = (thumbTip.y - indexTip.y) * height;
       return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function getPalmScalePx(landmarks, width, height) {
+      return distance2D(
+        { x: landmarks[LANDMARKS.INDEX_MCP].x * width, y: landmarks[LANDMARKS.INDEX_MCP].y * height },
+        { x: landmarks[LANDMARKS.PINKY_MCP].x * width, y: landmarks[LANDMARKS.PINKY_MCP].y * height }
+      );
+    }
+
+    function dynamicPinchThresholds(landmarks, width, height) {
+      const palmPx = Math.max(1, getPalmScalePx(landmarks, width, height));
+      const start = Math.max(CONFIG.pinchPx, palmPx * CONFIG.pinchScaleFactor);
+      const end = Math.max(start + 8, Math.max(CONFIG.pinchReleasePx || start * 1.25, start * 1.25));
+      return { start, end };
     }
 
     // Calculate hand size for normalization
@@ -839,9 +855,10 @@
         confidence = Math.max(0.85, fistResult.confidence);
       }
       // 2. Pinch (highest priority when close) - but only if not a fist
-      else if (pinchDist < CONFIG.pinchPx) {
+      else if (pinchDist < pinchThr.start) {
+        const pinchStartPx = pinchThr.start;
         gesture = 'Pinch';
-        confidence = Math.max(0.75, 1 - pinchDist / CONFIG.pinchPx);
+        confidence = Math.max(0.75, 1 - pinchDist / pinchStartPx);
       }
       // 3. Open Palm (all extended with low curl and high spread)
       else if ((allExtended || fourExtended) && handCurl < 0.35 && handSpread > 0.35) {
@@ -1106,19 +1123,21 @@
       return 0;
     }
 
-    function detectPinch(hand, pinchDist) {
-      const isPinching = pinchDist < CONFIG.pinchPx;
+    function detectPinch(hand, pinchDist, width, height) {
+      const thr = dynamicPinchThresholds(hand.landmarks, width, height);
 
-      if (isPinching && !hand.pinching) {
+      if (pinchDist < thr.start && !hand.pinching) {
         hand.pinching = true;
         hand.pinchStartTime = Date.now();
         return 'start';
-      } else if (isPinching && hand.pinching) {
-        const duration = Date.now() - hand.pinchStartTime;
-        if (duration > CONFIG.pinchHoldMs) {
-          return 'hold';
+      }
+
+      if (hand.pinching) {
+        if (pinchDist <= thr.end) {
+          const duration = Date.now() - hand.pinchStartTime;
+          if (duration > CONFIG.pinchHoldMs) return 'hold';
+          return null;
         }
-      } else if (!isPinching && hand.pinching) {
         hand.pinching = false;
         return 'end';
       }
@@ -1282,13 +1301,14 @@
           const wrist = landmarks[LANDMARKS.WRIST];
           const normalized = normalizeCoords(wrist.x, wrist.y, width, height, CONFIG.mirrorVideo);
 
+          let bestDist = Infinity;
+          const matchPx = Math.max(90, Math.min(width, height) * 0.18);
           for (const [existingId, existingHand] of state.hands) {
-            if (existingHand.handedness === handedness) {
-              const dist = distance2D(normalized, existingHand.palm);
-              if (dist < 100) { // Proximity threshold
-                handId = existingId;
-                break;
-              }
+            if (existingHand.handedness !== handedness) continue;
+            const dist = distance2D(normalized, existingHand.palm);
+            if (dist < matchPx && dist < bestDist) {
+              handId = existingId;
+              bestDist = dist;
             }
           }
 
@@ -1366,7 +1386,7 @@
           }
 
           // Detect pinch
-          const pinchState = detectPinch(hand, pinchDist);
+          const pinchState = detectPinch(hand, pinchDist, width, height);
           if (pinchState) {
             HandInput.emit('pinch', {
               state: pinchState,
