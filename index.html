@@ -181,6 +181,93 @@
       pointer-events: none;
       z-index: 5;
     }
+
+    /* ── XG GRL GVNG Gesture Effects ── */
+    .xg-raise {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 60vh;
+      background: linear-gradient(to top, rgba(255,215,0,0.65), rgba(255,215,0,0.25), transparent);
+      pointer-events: none;
+      z-index: 50;
+      animation: xg-raise-anim 0.85s ease-out forwards;
+    }
+
+    .xg-raise-text {
+      position: fixed;
+      top: 40%; left: 50%;
+      font-size: 60px;
+      font-weight: 900;
+      color: #ffd700;
+      text-shadow: 0 0 30px rgba(255,215,0,1), 0 0 60px rgba(255,215,0,0.5);
+      pointer-events: none;
+      z-index: 51;
+      animation: xg-raise-text-anim 0.85s ease-out forwards;
+      letter-spacing: 4px;
+      white-space: nowrap;
+    }
+
+    @keyframes xg-raise-anim {
+      0%   { opacity: 1; }
+      100% { opacity: 0; transform: translateY(-30px); }
+    }
+
+    @keyframes xg-raise-text-anim {
+      0%   { opacity: 0; transform: translate(-50%, 10px); }
+      25%  { opacity: 1; transform: translate(-50%, -50%); }
+      75%  { opacity: 1; transform: translate(-50%, -60px); }
+      100% { opacity: 0; transform: translate(-50%, -90px); }
+    }
+
+    .xg-stack {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 50;
+      animation: xg-stack-bg-anim 0.7s ease-out forwards;
+    }
+
+    .xg-stack-text {
+      font-size: 72px;
+      font-weight: 900;
+      color: #fff;
+      text-shadow: 0 0 20px rgba(255,60,60,1), 0 0 50px rgba(255,60,60,0.8);
+      letter-spacing: 6px;
+      animation: xg-stack-text-anim 0.7s ease-out forwards;
+    }
+
+    @keyframes xg-stack-bg-anim {
+      0%   { background: rgba(200,0,0,0.25); }
+      100% { background: rgba(200,0,0,0); }
+    }
+
+    @keyframes xg-stack-text-anim {
+      0%   { opacity: 0; transform: scale(1.3); }
+      25%  { opacity: 1; transform: scale(1); }
+      75%  { opacity: 1; }
+      100% { opacity: 0; transform: scale(0.9); }
+    }
+
+    .xg-swipe-flash {
+      position: fixed;
+      pointer-events: none;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 48px;
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: 3px;
+      text-shadow: 0 0 20px rgba(255,215,0,1), 0 0 40px rgba(255,215,0,0.8);
+      animation: flash 0.6s ease-out forwards;
+    }
+
+    .xg-swipe-flash.left  { left: 0; top: 0; bottom: 0; width: 200px; background: linear-gradient(to right, rgba(255,215,0,0.7), rgba(255,215,0,0.4), transparent); }
+    .xg-swipe-flash.right { right: 0; top: 0; bottom: 0; width: 200px; background: linear-gradient(to left, rgba(255,215,0,0.7), rgba(255,215,0,0.4), transparent); }
   </style>
 </head>
 <body>
@@ -943,6 +1030,207 @@
     pinchRings.push({ x: rect.left + nx*rect.width, y: rect.top + ny*rect.height, time: Date.now() });
   });
 
+  // ── XG GRL GVNG visual effects ──────────────
+
+  // 1.1 – We Go Up Raise: gold burst from bottom + rising text
+  HandInput.on('xg:raise', () => {
+    const burst = document.createElement('div');
+    burst.className = 'xg-raise';
+    document.body.appendChild(burst);
+
+    const text = document.createElement('div');
+    text.className = 'xg-raise-text';
+    text.textContent = '↑ WE GO UP';
+    document.body.appendChild(text);
+
+    setTimeout(() => { burst.remove(); text.remove(); }, 850);
+  });
+
+  // 1.2 – Bow Down Stack: red flash + "BOW DOWN" caption
+  HandInput.on('xg:stack', () => {
+    const el = document.createElement('div');
+    el.className = 'xg-stack';
+    el.innerHTML = '<span class="xg-stack-text">BOW DOWN</span>';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 700);
+  });
+
+  // 1.3 – XG Swipe: gold side flash (distinct from existing blue swipe)
+  HandInput.on('xg:swipe', ({ direction }) => {
+    const labels = { left: '← SWEEP', right: 'SWEEP →' };
+    const el = document.createElement('div');
+    el.className = `xg-swipe-flash ${direction}`;
+    el.textContent = labels[direction] || '';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 600);
+  });
+
+  // ─────────────────────────────────────────────
+  // XG GRL GVNG GESTURE SYSTEM
+  // 1.1 We Go Up Raise  |  1.2 Bow Down Stack  |  1.3 Horizontal Swipe
+  // Uses raw MediaPipe landmark coordinates (normalized 0–1, y increases downward)
+  // ─────────────────────────────────────────────
+
+  function xgDist(p1, p2) {
+    return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+  }
+
+  function xgHandCenter(lm) {
+    const pts = [lm[0], lm[5], lm[9], lm[13], lm[17]];
+    return {
+      x: pts.reduce((s, p) => s + p.x, 0) / 5,
+      y: pts.reduce((s, p) => s + p.y, 0) / 5
+    };
+  }
+
+  function xgPalmWidth(lm) { return xgDist(lm[5], lm[17]); }
+
+  // Returns how many of the 4 non-thumb fingers point clearly upward (tip above MCP in y)
+  function xgCountExtended(lm) {
+    return (lm[8].y  < lm[5].y  ? 1 : 0) +
+           (lm[12].y < lm[9].y  ? 1 : 0) +
+           (lm[16].y < lm[13].y ? 1 : 0) +
+           (lm[20].y < lm[17].y ? 1 : 0);
+  }
+
+  function xgAvgFingertipY(lm) { return (lm[8].y + lm[12].y + lm[16].y + lm[20].y) / 4; }
+  function xgAvgMcpY(lm)       { return (lm[5].y + lm[9].y  + lm[13].y + lm[17].y) / 4; }
+
+  function xgFingertipsSeparated(lm, pw) {
+    return xgDist(lm[8],  lm[12]) > 0.22 * pw &&
+           xgDist(lm[12], lm[16]) > 0.18 * pw &&
+           xgDist(lm[16], lm[20]) > 0.15 * pw;
+  }
+
+  function xgThumbOut(lm, handedness) {
+    const pw = xgPalmWidth(lm);
+    return handedness === 'Right'
+      ? lm[4].x < lm[5].x - 0.15 * pw
+      : lm[4].x > lm[5].x + 0.15 * pw;
+  }
+
+  // ── Gesture 1.1: We Go Up Raise ──────────────
+  function detectWeGoUpRaise(lm, handedness) {
+    const pw = xgPalmWidth(lm);
+    if (pw < 0.05)                                       return false;
+    if (xgCountExtended(lm) < 4)                        return false;
+    if (xgAvgFingertipY(lm) > xgAvgMcpY(lm) - 0.20 * pw) return false;
+    if (!xgFingertipsSeparated(lm, pw))                 return false;
+    if (!xgThumbOut(lm, handedness))                    return false;
+    if (lm[0].y - lm[12].y < 0.80 * pw)                return false;
+    return true;
+  }
+
+  // ── Gesture 1.2: Bow Down Stack ──────────────
+  function xgSemiOpen(lm) {
+    const ok = [lm[8].y  < lm[6].y  + 0.03,
+                lm[12].y < lm[10].y + 0.03,
+                lm[16].y < lm[14].y + 0.03,
+                lm[20].y < lm[18].y + 0.03];
+    return ok.filter(Boolean).length >= 3;
+  }
+
+  function xgPalmFlat(lm) {
+    return Math.abs(lm[5].y - lm[17].y) < 0.35 * xgPalmWidth(lm);
+  }
+
+  function detectBowDownStack(lm1, lm2) {
+    const c1 = xgHandCenter(lm1), c2 = xgHandCenter(lm2);
+    let upper = lm1, lower = lm2, cu = c1, cl = c2;
+    if (c2.y < c1.y) { upper = lm2; lower = lm1; cu = c2; cl = c1; }
+
+    const pw = (xgPalmWidth(upper) + xgPalmWidth(lower)) / 2;
+    if (pw < 0.05)                                        return false;
+    if (xgDist(upper[0], lower[0]) > 3.2 * pw)           return false;
+    if (Math.abs(cu.x - cl.x) > 1.2 * pw)                return false;
+    const vGap = Math.abs(cu.y - cl.y);
+    if (vGap < 0.5 * pw || vGap > 2.8 * pw)              return false;
+    if (!xgSemiOpen(upper) || !xgSemiOpen(lower))         return false;
+    if (!xgPalmFlat(upper) || !xgPalmFlat(lower))         return false;
+    if (xgDist(upper[9], lower[0]) > 2.8 * pw &&
+        xgDist(lower[9], upper[0]) > 2.8 * pw)            return false;
+    return true;
+  }
+
+  // ── Gesture 1.3: Horizontal Swipe (displacement-based) ──
+  class XGSwipeDetector {
+    constructor(historyLen = 10, cooldownMs = 500) {
+      this.historyLen  = historyLen;
+      this.cooldownMs  = cooldownMs;
+      this.history     = [];
+      this.lastTrigger = 0;
+    }
+
+    update(lm) {
+      const now    = performance.now();
+      const center = xgHandCenter(lm);
+      this.history.push({ t: now, p: center });
+      if (this.history.length > this.historyLen) this.history.shift();
+      if (this.history.length < 6)               return null;
+      if (now - this.lastTrigger < this.cooldownMs) return null;
+      if (xgCountExtended(lm) < 3)               return null;
+
+      const pw = xgPalmWidth(lm);
+      if (pw < 0.05) return null;
+
+      const first = this.history[0], last = this.history[this.history.length - 1];
+      const dt = (last.t - first.t) / 1000;
+      if (dt <= 0) return null;
+
+      const dx = last.p.x - first.p.x;
+      const dy = last.p.y - first.p.y;
+      if (Math.abs(dx) < 1.8 * pw)  return null;
+      if (Math.abs(dy) > 0.9 * pw)  return null;
+      if (Math.abs(dx) / dt < 1.2)  return null;
+
+      this.lastTrigger = now;
+      return dx > 0 ? 'SWIPE_RIGHT' : 'SWIPE_LEFT';
+    }
+  }
+
+  const xgSwipeDetector = new XGSwipeDetector();
+
+  // Cooldowns to prevent gesture spam
+  const xgCooldowns = { raise: 0, stack: 0 };
+  const XG_COOLDOWN_MS = 600;
+
+  function updateXGGestures(results) {
+    if (!results.multiHandLandmarks?.length) return;
+
+    const handsData = results.multiHandLandmarks.map((lm, i) => ({
+      lm,
+      handedness: results.multiHandedness[i].label
+    }));
+
+    const now = Date.now();
+
+    // 1.1 – We Go Up Raise
+    for (const { lm, handedness } of handsData) {
+      if (now > xgCooldowns.raise && detectWeGoUpRaise(lm, handedness)) {
+        xgCooldowns.raise = now + XG_COOLDOWN_MS;
+        HandInput.emit('xg:raise', { handedness, time: now });
+        break;
+      }
+    }
+
+    // 1.2 – Bow Down Stack
+    if (handsData.length >= 2 && now > xgCooldowns.stack) {
+      if (detectBowDownStack(handsData[0].lm, handsData[1].lm)) {
+        xgCooldowns.stack = now + XG_COOLDOWN_MS;
+        HandInput.emit('xg:stack', { time: now });
+      }
+    }
+
+    // 1.3 – Horizontal Swipe (XG version, gold color — distinct from existing blue swipe)
+    const swipeResult = xgSwipeDetector.update(handsData[0].lm);
+    if (swipeResult) {
+      // Invert direction when video is mirrored so visual matches user's hand movement
+      let direction = swipeResult === 'SWIPE_RIGHT' ? 'right' : 'left';
+      if (CONFIG.mirrorVideo) direction = direction === 'right' ? 'left' : 'right';
+      HandInput.emit('xg:swipe', { direction, time: now });
+    }
+  }
+
   // ─────────────────────────────────────────────
   // MOUSE / TOUCH FALLBACK
   // ─────────────────────────────────────────────
@@ -1033,6 +1321,7 @@
       const dt  = state.lastFrameTime ? now - state.lastFrameTime : 16;
       state.lastFrameTime = now;
       updateHands(results, dt);
+      updateXGGestures(results);
       drawHands(ctx);
       updateDebugPanel();
       updateEffects();
