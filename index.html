@@ -220,6 +220,7 @@
 
   const CONFIG = {
     mirrorVideo:           true,
+    visualEffects:         false,
     maxHands:              2,
     minConfidence:         0.7,
     smoothFrames:          8,
@@ -282,7 +283,8 @@
     videoDisplayHeight: 0,
     dpr:              1,
     xgSwipeHistory:   new Map(),
-    xgLastEmit:       new Map()
+    xgLastEmit:       new Map(),
+    xgHoldCounts:     new Map()
   };
 
   // ─────────────────────────────────────────────
@@ -399,6 +401,12 @@
     if (now - last < cooldownMs) return false;
     state.xgLastEmit.set(key, now);
     return true;
+  }
+
+  function xgConfirmFrames(key, condition, needed = 3) {
+    const next = condition ? (state.xgHoldCounts.get(key) || 0) + 1 : 0;
+    state.xgHoldCounts.set(key, next);
+    return next >= needed;
   }
 
   function detectWeGoUpRaise(lms, handedness) {
@@ -872,7 +880,9 @@
         const { gesture, confidence, pinchDist } = recognizeGesture(hand, w, h);
         hand.gesture = gesture; hand.gestureConfidence = confidence; hand.pinchDist = pinchDist;
 
-        if (detectWeGoUpRaise(hand.landmarks, handedness) && xgCooldownReady(`raise_${handedness}`, 500)) {
+        const raiseKey = `raise_${hand.id}`;
+        const raiseNow = detectWeGoUpRaise(hand.landmarks, handedness);
+        if (xgConfirmFrames(raiseKey, raiseNow, 3) && xgCooldownReady(`raise_${handedness}`, 500)) {
           HandInput.emit('xggesture', { name: 'XG_1_1_WE_GO_UP_RAISE', handedness, time: Date.now() });
         }
 
@@ -910,13 +920,17 @@
       if (!newHands.has(id) && Date.now() - hand.lastSeen < CONFIG.lostTimeoutMs) {
         newHands.set(id, hand);
       }
-      if (!newHands.has(id)) state.xgSwipeHistory.delete(id);
+      if (!newHands.has(id)) {
+        state.xgSwipeHistory.delete(id);
+        state.xgHoldCounts.delete(`raise_${id}`);
+      }
     }
 
     state.hands = newHands;
 
     const handsArr = Array.from(state.hands.values());
-    if (handsArr.length >= 2 && detectBowDownStack(handsArr[0], handsArr[1]) && xgCooldownReady('stack_pair', 600)) {
+    const stackNow = handsArr.length >= 2 && detectBowDownStack(handsArr[0], handsArr[1]);
+    if (xgConfirmFrames('stack_pair_confirm', stackNow, 3) && xgCooldownReady('stack_pair', 600)) {
       HandInput.emit('xggesture', { name: 'XG_1_2_BOW_DOWN_STACK', time: Date.now() });
     }
     const overlapState = detectOverlap(handsArr);
@@ -1078,6 +1092,7 @@
 
   // Swipe flash
   HandInput.on('swipe', ({ direction }) => {
+    if (!CONFIG.visualEffects) return;
     const labels = { left:'← SWIPE LEFT', right:'SWIPE RIGHT →', up:'↑ SWIPE UP', down:'↓ SWIPE DOWN' };
     const el = document.createElement('div');
     el.className = `swipe-flash ${direction}`;
@@ -1097,6 +1112,7 @@
   let hideOrbTimeout;
 
   HandInput.on('tap', ({ nx, ny, count }) => {
+    if (!CONFIG.visualEffects) return;
     const rect = canvas.getBoundingClientRect();
     tapOrb.style.left = `${rect.left + nx*rect.width}px`;
     tapOrb.style.top  = `${rect.top  + ny*rect.height}px`;
@@ -1109,6 +1125,7 @@
 
   // Pinch rings
   HandInput.on('pinch', ({ state: ps, nx, ny }) => {
+    if (!CONFIG.visualEffects) return;
     if (!ENABLE_PINCH_VISUALS || ps !== 'start') return;
     const rect = canvas.getBoundingClientRect();
     pinchRings.push({ x: rect.left + nx*rect.width, y: rect.top + ny*rect.height, time: Date.now() });
