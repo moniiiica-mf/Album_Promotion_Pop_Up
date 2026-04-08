@@ -873,13 +873,11 @@
         hand.gesture = gesture; hand.gestureConfidence = confidence; hand.pinchDist = pinchDist;
 
         if (detectWeGoUpRaise(hand.landmarks, handedness) && xgCooldownReady(`raise_${handedness}`, 500)) {
-          hand.xgGesture = 'XG_1_1_WE_GO_UP_RAISE';
-          HandInput.emit('xggesture', { name: hand.xgGesture, handedness, time: Date.now() });
+          HandInput.emit('xggesture', { name: 'XG_1_1_WE_GO_UP_RAISE', handedness, time: Date.now() });
         }
 
         const xgSwipe = detectXgHorizontalSwipe(hand);
         if (xgSwipe && xgCooldownReady(`swipe_${handedness}`, 550)) {
-          hand.xgGesture = xgSwipe;
           HandInput.emit('xggesture', { name: xgSwipe, handedness, time: Date.now() });
         }
 
@@ -1047,7 +1045,6 @@
         <div class="debug-row"><span class="debug-key">Fist:</span><span class="debug-value" style="color:${hand.fistDetected?'#4aff4a':'#ff4a4a'}">${hand.fistDetected?'YES':'NO'} (${(hand.fistConfidence*100)?.toFixed(0)}%)</span></div>
         <div class="debug-row"><span class="debug-key">ExtScore:</span><span class="debug-value" style="font-size:10px">I:${s.index?.toFixed(2)} M:${s.middle?.toFixed(2)} R:${s.ring?.toFixed(2)} P:${s.pinky?.toFixed(2)}</span></div>
         <div class="debug-row"><span class="debug-key">Point:</span><span class="debug-value" style="color:${hand.looksLikePoint?'#4aff4a':'#888'}">${hand.looksLikePoint?'✓ YES':'✗ NO'}</span></div>
-        <div class="debug-row"><span class="debug-key">XG:</span><span class="debug-value">${hand.xgGesture || '—'}</span></div>
         ${hand._tapInit ? `
         <div class="debug-row"><span class="debug-key">Tap Armed:</span><span class="debug-value" style="color:${hand._tapArmed?'#4aff4a':'#888'}">${hand._tapArmed?'🎯 YES':'⏳ NO'}</span></div>
         <div class="debug-row"><span class="debug-key">Tap Move:</span><span class="debug-value">${hand.tapMovement?.toFixed(4)}</span></div>
@@ -1090,13 +1087,9 @@
   });
 
   HandInput.on('xggesture', ({ name }) => {
-    const map = {
-      XG_1_1_WE_GO_UP_RAISE: 'XG 1.1 • WE GO UP',
-      XG_1_2_BOW_DOWN_STACK: 'XG 1.2 • BOW DOWN',
-      XG_1_3_SWIPE_RIGHT:    'XG 1.3 • SWIPE →',
-      XG_1_3_SWIPE_LEFT:     'XG 1.3 • SWIPE ←'
-    };
-    showFlash(map[name] || name, 'up');
+    // Intentionally no visual effect for XG 1.1 / 1.2 / 1.3.
+    // Keep event emission for downstream integrations only.
+    void name;
   });
 
   // Tap orb
