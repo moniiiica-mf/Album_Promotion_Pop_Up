@@ -280,7 +280,9 @@
     videoNativeHeight: 0,
     videoDisplayWidth: 0,
     videoDisplayHeight: 0,
-    dpr:              1
+    dpr:              1,
+    xgSwipeHistory:   new Map(),
+    xgLastEmit:       new Map()
   };
 
   // ─────────────────────────────────────────────
@@ -364,6 +366,122 @@
     const vx = (curr.x - prev.x) / dt * 1000;
     const vy = (curr.y - prev.y) / dt * 1000;
     return { vx, vy, speed: Math.sqrt(vx*vx + vy*vy) };
+  }
+
+  function avgPoints(points) {
+    return {
+      x: points.reduce((s, p) => s + p.x, 0) / points.length,
+      y: points.reduce((s, p) => s + p.y, 0) / points.length,
+      z: points.reduce((s, p) => s + (p.z || 0), 0) / points.length
+    };
+  }
+
+  function handCenterNorm(lms) {
+    return avgPoints([lms[LM.WRIST], lms[LM.INDEX_MCP], lms[LM.MIDDLE_MCP], lms[LM.RING_MCP], lms[LM.PINKY_MCP]]);
+  }
+
+  function palmWidthNorm(lms) {
+    return dist2D(lms[LM.INDEX_MCP], lms[LM.PINKY_MCP]);
+  }
+
+  function countExtendedFingersNorm(lms) {
+    let count = 0;
+    if (lms[LM.INDEX_TIP].y  < lms[LM.INDEX_PIP].y  && lms[LM.INDEX_TIP].y  < lms[LM.INDEX_MCP].y)  count++;
+    if (lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_PIP].y && lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_MCP].y) count++;
+    if (lms[LM.RING_TIP].y   < lms[LM.RING_PIP].y   && lms[LM.RING_TIP].y   < lms[LM.RING_MCP].y)   count++;
+    if (lms[LM.PINKY_TIP].y  < lms[LM.PINKY_PIP].y  && lms[LM.PINKY_TIP].y  < lms[LM.PINKY_MCP].y)  count++;
+    return count;
+  }
+
+  function xgCooldownReady(key, cooldownMs) {
+    const now = Date.now();
+    const last = state.xgLastEmit.get(key) || 0;
+    if (now - last < cooldownMs) return false;
+    state.xgLastEmit.set(key, now);
+    return true;
+  }
+
+  function detectWeGoUpRaise(lms, handedness) {
+    const pw = palmWidthNorm(lms);
+    if (pw < 0.05) return false;
+    if (countExtendedFingersNorm(lms) < 4) return false;
+
+    const tipAvgY = (lms[LM.INDEX_TIP].y + lms[LM.MIDDLE_TIP].y + lms[LM.RING_TIP].y + lms[LM.PINKY_TIP].y) / 4;
+    const mcpAvgY = (lms[LM.INDEX_MCP].y + lms[LM.MIDDLE_MCP].y + lms[LM.RING_MCP].y + lms[LM.PINKY_MCP].y) / 4;
+    if (tipAvgY > mcpAvgY - 0.20 * pw) return false;
+
+    if (!(dist2D(lms[LM.INDEX_TIP], lms[LM.MIDDLE_TIP]) > 0.22 * pw &&
+          dist2D(lms[LM.MIDDLE_TIP], lms[LM.RING_TIP])  > 0.18 * pw &&
+          dist2D(lms[LM.RING_TIP], lms[LM.PINKY_TIP])   > 0.15 * pw)) return false;
+
+    const thumbTip = lms[LM.THUMB_TIP], indexMcp = lms[LM.INDEX_MCP];
+    const thumbOut = handedness === 'Right'
+      ? thumbTip.x < indexMcp.x - 0.15 * pw
+      : thumbTip.x > indexMcp.x + 0.15 * pw;
+    if (!thumbOut) return false;
+
+    if (lms[LM.WRIST].y - lms[LM.MIDDLE_TIP].y < 0.80 * pw) return false;
+    if (lms[LM.WRIST].y > 0.75 || mcpAvgY > 0.70) return false;
+    return true;
+  }
+
+  function semiOpenHand(lms) {
+    const checks = [
+      lms[LM.INDEX_TIP].y  < lms[LM.INDEX_PIP].y  + 0.03,
+      lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_PIP].y + 0.03,
+      lms[LM.RING_TIP].y   < lms[LM.RING_PIP].y   + 0.03,
+      lms[LM.PINKY_TIP].y  < lms[LM.PINKY_PIP].y  + 0.03
+    ];
+    return checks.filter(Boolean).length >= 3;
+  }
+
+  function palmIsFlatish(lms) {
+    const pw = palmWidthNorm(lms);
+    return Math.abs(lms[LM.INDEX_MCP].y - lms[LM.PINKY_MCP].y) < 0.35 * pw;
+  }
+
+  function detectBowDownStack(h1, h2) {
+    if (!h1 || !h2) return false;
+    let upper = h1.landmarks, lower = h2.landmarks;
+    let cu = handCenterNorm(upper), cl = handCenterNorm(lower);
+    if (cl.y < cu.y) { [upper, lower] = [lower, upper]; [cu, cl] = [cl, cu]; }
+
+    const pwAvg = (palmWidthNorm(upper) + palmWidthNorm(lower)) / 2;
+    if (pwAvg < 0.05) return false;
+    if (dist2D(upper[LM.WRIST], lower[LM.WRIST]) > 3.2 * pwAvg) return false;
+    if (Math.abs(cu.x - cl.x) > 1.2 * pwAvg) return false;
+    const vGap = Math.abs(cu.y - cl.y);
+    if (vGap < 0.5 * pwAvg || vGap > 2.8 * pwAvg) return false;
+    if (!semiOpenHand(upper) || !semiOpenHand(lower)) return false;
+    if (!palmIsFlatish(upper) || !palmIsFlatish(lower)) return false;
+    if (dist2D(upper[LM.MIDDLE_MCP], lower[LM.WRIST]) > 2.8 * pwAvg &&
+        dist2D(lower[LM.MIDDLE_MCP], upper[LM.WRIST]) > 2.8 * pwAvg) return false;
+    return true;
+  }
+
+  function detectXgHorizontalSwipe(hand) {
+    const lms = hand.landmarks;
+    const key = hand.id;
+    if (!state.xgSwipeHistory.has(key)) state.xgSwipeHistory.set(key, []);
+    const hist = state.xgSwipeHistory.get(key);
+    const now = performance.now();
+    hist.push({ t: now, p: handCenterNorm(lms) });
+    while (hist.length > 10) hist.shift();
+    if (hist.length < 6) return null;
+    if (countExtendedFingersNorm(lms) < 3) return null;
+    const pw = palmWidthNorm(lms);
+    if (pw < 0.05) return null;
+
+    const first = hist[0], last = hist[hist.length - 1];
+    const dt = (last.t - first.t) / 1000;
+    if (dt <= 0 || dt > 0.55) return null;
+    const dx = last.p.x - first.p.x;
+    const dy = last.p.y - first.p.y;
+    if (Math.abs(dx) < 1.8 * pw) return null;
+    if (Math.abs(dy) > 0.9 * pw) return null;
+    const speed = Math.abs(dx / dt);
+    if (speed < 1.2) return null;
+    return dx > 0 ? 'XG_1_3_SWIPE_RIGHT' : 'XG_1_3_SWIPE_LEFT';
   }
 
   // ─────────────────────────────────────────────
@@ -754,6 +872,17 @@
         const { gesture, confidence, pinchDist } = recognizeGesture(hand, w, h);
         hand.gesture = gesture; hand.gestureConfidence = confidence; hand.pinchDist = pinchDist;
 
+        if (detectWeGoUpRaise(hand.landmarks, handedness) && xgCooldownReady(`raise_${handedness}`, 500)) {
+          hand.xgGesture = 'XG_1_1_WE_GO_UP_RAISE';
+          HandInput.emit('xggesture', { name: hand.xgGesture, handedness, time: Date.now() });
+        }
+
+        const xgSwipe = detectXgHorizontalSwipe(hand);
+        if (xgSwipe && xgCooldownReady(`swipe_${handedness}`, 550)) {
+          hand.xgGesture = xgSwipe;
+          HandInput.emit('xggesture', { name: xgSwipe, handedness, time: Date.now() });
+        }
+
         const swipe = detectSwipe(hand, w, h);
         if (swipe) HandInput.emit('swipe', { direction:swipe.direction, speed:swipe.speed, handedness, time:Date.now() });
 
@@ -783,11 +912,15 @@
       if (!newHands.has(id) && Date.now() - hand.lastSeen < CONFIG.lostTimeoutMs) {
         newHands.set(id, hand);
       }
+      if (!newHands.has(id)) state.xgSwipeHistory.delete(id);
     }
 
     state.hands = newHands;
 
     const handsArr = Array.from(state.hands.values());
+    if (handsArr.length >= 2 && detectBowDownStack(handsArr[0], handsArr[1]) && xgCooldownReady('stack_pair', 600)) {
+      HandInput.emit('xggesture', { name: 'XG_1_2_BOW_DOWN_STACK', time: Date.now() });
+    }
     const overlapState = detectOverlap(handsArr);
     if (overlapState) {
       const d = handsArr.length === 2 ? dist2D({ x:handsArr[0].palm.x, y:handsArr[0].palm.y }, { x:handsArr[1].palm.x, y:handsArr[1].palm.y }) : 0;
@@ -914,6 +1047,7 @@
         <div class="debug-row"><span class="debug-key">Fist:</span><span class="debug-value" style="color:${hand.fistDetected?'#4aff4a':'#ff4a4a'}">${hand.fistDetected?'YES':'NO'} (${(hand.fistConfidence*100)?.toFixed(0)}%)</span></div>
         <div class="debug-row"><span class="debug-key">ExtScore:</span><span class="debug-value" style="font-size:10px">I:${s.index?.toFixed(2)} M:${s.middle?.toFixed(2)} R:${s.ring?.toFixed(2)} P:${s.pinky?.toFixed(2)}</span></div>
         <div class="debug-row"><span class="debug-key">Point:</span><span class="debug-value" style="color:${hand.looksLikePoint?'#4aff4a':'#888'}">${hand.looksLikePoint?'✓ YES':'✗ NO'}</span></div>
+        <div class="debug-row"><span class="debug-key">XG:</span><span class="debug-value">${hand.xgGesture || '—'}</span></div>
         ${hand._tapInit ? `
         <div class="debug-row"><span class="debug-key">Tap Armed:</span><span class="debug-value" style="color:${hand._tapArmed?'#4aff4a':'#888'}">${hand._tapArmed?'🎯 YES':'⏳ NO'}</span></div>
         <div class="debug-row"><span class="debug-key">Tap Move:</span><span class="debug-value">${hand.tapMovement?.toFixed(4)}</span></div>
@@ -953,6 +1087,16 @@
     el.textContent = labels[direction] || '';
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 600);
+  });
+
+  HandInput.on('xggesture', ({ name }) => {
+    const map = {
+      XG_1_1_WE_GO_UP_RAISE: 'XG 1.1 • WE GO UP',
+      XG_1_2_BOW_DOWN_STACK: 'XG 1.2 • BOW DOWN',
+      XG_1_3_SWIPE_RIGHT:    'XG 1.3 • SWIPE →',
+      XG_1_3_SWIPE_LEFT:     'XG 1.3 • SWIPE ←'
+    };
+    showFlash(map[name] || name, 'up');
   });
 
   // Tap orb
