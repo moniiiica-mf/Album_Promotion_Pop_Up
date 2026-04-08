@@ -220,6 +220,7 @@
 
   const CONFIG = {
     mirrorVideo:           true,
+    visualEffects:         false,
     maxHands:              2,
     minConfidence:         0.7,
     smoothFrames:          8,
@@ -227,6 +228,8 @@
     swipeSpeedPxPerSec:    800,
     swipeAngleToleranceDeg: 45,
     pinchPx:               55,
+    pinchReleasePx:        70,
+    pinchScaleFactor:      0.24,
     pinchHoldMs:           220,
     doubleTapMinMs:        100,
     doubleTapMaxMs:        500,
@@ -278,7 +281,10 @@
     videoNativeHeight: 0,
     videoDisplayWidth: 0,
     videoDisplayHeight: 0,
-    dpr:              1
+    dpr:              1,
+    xgSwipeHistory:   new Map(),
+    xgLastEmit:       new Map(),
+    xgHoldCounts:     new Map()
   };
 
   // ─────────────────────────────────────────────
@@ -315,6 +321,20 @@
     return Math.sqrt(((thumb.x-index.x)*w)**2 + ((thumb.y-index.y)*h)**2);
   }
 
+  function getPalmScalePx(lms, w, h) {
+    return dist2D(
+      { x: lms[LM.INDEX_MCP].x * w, y: lms[LM.INDEX_MCP].y * h },
+      { x: lms[LM.PINKY_MCP].x * w, y: lms[LM.PINKY_MCP].y * h }
+    );
+  }
+
+  function dynamicPinchThresholds(lms, w, h) {
+    const palmPx = Math.max(1, getPalmScalePx(lms, w, h));
+    const start = Math.max(CONFIG.pinchPx, palmPx * CONFIG.pinchScaleFactor);
+    const end = Math.max(start + 8, Math.max(CONFIG.pinchReleasePx || start * 1.25, start * 1.25));
+    return { start, end };
+  }
+
   function sub(a, b)    { return { x: a.x-b.x, y: a.y-b.y, z: (a.z||0)-(b.z||0) }; }
   function dot(u, v)    { return u.x*v.x + u.y*v.y + (u.z||0)*(v.z||0); }
   function mag(u)       { return Math.sqrt(u.x*u.x + u.y*u.y + (u.z||0)**2); }
@@ -348,6 +368,128 @@
     const vx = (curr.x - prev.x) / dt * 1000;
     const vy = (curr.y - prev.y) / dt * 1000;
     return { vx, vy, speed: Math.sqrt(vx*vx + vy*vy) };
+  }
+
+  function avgPoints(points) {
+    return {
+      x: points.reduce((s, p) => s + p.x, 0) / points.length,
+      y: points.reduce((s, p) => s + p.y, 0) / points.length,
+      z: points.reduce((s, p) => s + (p.z || 0), 0) / points.length
+    };
+  }
+
+  function handCenterNorm(lms) {
+    return avgPoints([lms[LM.WRIST], lms[LM.INDEX_MCP], lms[LM.MIDDLE_MCP], lms[LM.RING_MCP], lms[LM.PINKY_MCP]]);
+  }
+
+  function palmWidthNorm(lms) {
+    return dist2D(lms[LM.INDEX_MCP], lms[LM.PINKY_MCP]);
+  }
+
+  function countExtendedFingersNorm(lms) {
+    let count = 0;
+    if (lms[LM.INDEX_TIP].y  < lms[LM.INDEX_PIP].y  && lms[LM.INDEX_TIP].y  < lms[LM.INDEX_MCP].y)  count++;
+    if (lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_PIP].y && lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_MCP].y) count++;
+    if (lms[LM.RING_TIP].y   < lms[LM.RING_PIP].y   && lms[LM.RING_TIP].y   < lms[LM.RING_MCP].y)   count++;
+    if (lms[LM.PINKY_TIP].y  < lms[LM.PINKY_PIP].y  && lms[LM.PINKY_TIP].y  < lms[LM.PINKY_MCP].y)  count++;
+    return count;
+  }
+
+  function xgCooldownReady(key, cooldownMs) {
+    const now = Date.now();
+    const last = state.xgLastEmit.get(key) || 0;
+    if (now - last < cooldownMs) return false;
+    state.xgLastEmit.set(key, now);
+    return true;
+  }
+
+  function xgConfirmFrames(key, condition, needed = 3) {
+    const next = condition ? (state.xgHoldCounts.get(key) || 0) + 1 : 0;
+    state.xgHoldCounts.set(key, next);
+    return next >= needed;
+  }
+
+  function detectWeGoUpRaise(lms, handedness) {
+    const pw = palmWidthNorm(lms);
+    if (pw < 0.05) return false;
+    if (countExtendedFingersNorm(lms) < 4) return false;
+
+    const tipAvgY = (lms[LM.INDEX_TIP].y + lms[LM.MIDDLE_TIP].y + lms[LM.RING_TIP].y + lms[LM.PINKY_TIP].y) / 4;
+    const mcpAvgY = (lms[LM.INDEX_MCP].y + lms[LM.MIDDLE_MCP].y + lms[LM.RING_MCP].y + lms[LM.PINKY_MCP].y) / 4;
+    if (tipAvgY > mcpAvgY - 0.20 * pw) return false;
+
+    if (!(dist2D(lms[LM.INDEX_TIP], lms[LM.MIDDLE_TIP]) > 0.22 * pw &&
+          dist2D(lms[LM.MIDDLE_TIP], lms[LM.RING_TIP])  > 0.18 * pw &&
+          dist2D(lms[LM.RING_TIP], lms[LM.PINKY_TIP])   > 0.15 * pw)) return false;
+
+    const thumbTip = lms[LM.THUMB_TIP], indexMcp = lms[LM.INDEX_MCP];
+    const thumbOut = handedness === 'Right'
+      ? thumbTip.x < indexMcp.x - 0.15 * pw
+      : thumbTip.x > indexMcp.x + 0.15 * pw;
+    if (!thumbOut) return false;
+
+    if (lms[LM.WRIST].y - lms[LM.MIDDLE_TIP].y < 0.80 * pw) return false;
+    if (lms[LM.WRIST].y > 0.75 || mcpAvgY > 0.70) return false;
+    return true;
+  }
+
+  function semiOpenHand(lms) {
+    const checks = [
+      lms[LM.INDEX_TIP].y  < lms[LM.INDEX_PIP].y  + 0.03,
+      lms[LM.MIDDLE_TIP].y < lms[LM.MIDDLE_PIP].y + 0.03,
+      lms[LM.RING_TIP].y   < lms[LM.RING_PIP].y   + 0.03,
+      lms[LM.PINKY_TIP].y  < lms[LM.PINKY_PIP].y  + 0.03
+    ];
+    return checks.filter(Boolean).length >= 3;
+  }
+
+  function palmIsFlatish(lms) {
+    const pw = palmWidthNorm(lms);
+    return Math.abs(lms[LM.INDEX_MCP].y - lms[LM.PINKY_MCP].y) < 0.35 * pw;
+  }
+
+  function detectBowDownStack(h1, h2) {
+    if (!h1 || !h2) return false;
+    let upper = h1.landmarks, lower = h2.landmarks;
+    let cu = handCenterNorm(upper), cl = handCenterNorm(lower);
+    if (cl.y < cu.y) { [upper, lower] = [lower, upper]; [cu, cl] = [cl, cu]; }
+
+    const pwAvg = (palmWidthNorm(upper) + palmWidthNorm(lower)) / 2;
+    if (pwAvg < 0.05) return false;
+    if (dist2D(upper[LM.WRIST], lower[LM.WRIST]) > 3.2 * pwAvg) return false;
+    if (Math.abs(cu.x - cl.x) > 1.2 * pwAvg) return false;
+    const vGap = Math.abs(cu.y - cl.y);
+    if (vGap < 0.5 * pwAvg || vGap > 2.8 * pwAvg) return false;
+    if (!semiOpenHand(upper) || !semiOpenHand(lower)) return false;
+    if (!palmIsFlatish(upper) || !palmIsFlatish(lower)) return false;
+    if (dist2D(upper[LM.MIDDLE_MCP], lower[LM.WRIST]) > 2.8 * pwAvg &&
+        dist2D(lower[LM.MIDDLE_MCP], upper[LM.WRIST]) > 2.8 * pwAvg) return false;
+    return true;
+  }
+
+  function detectXgHorizontalSwipe(hand) {
+    const lms = hand.landmarks;
+    const key = hand.id;
+    if (!state.xgSwipeHistory.has(key)) state.xgSwipeHistory.set(key, []);
+    const hist = state.xgSwipeHistory.get(key);
+    const now = performance.now();
+    hist.push({ t: now, p: handCenterNorm(lms) });
+    while (hist.length > 10) hist.shift();
+    if (hist.length < 6) return null;
+    if (countExtendedFingersNorm(lms) < 3) return null;
+    const pw = palmWidthNorm(lms);
+    if (pw < 0.05) return null;
+
+    const first = hist[0], last = hist[hist.length - 1];
+    const dt = (last.t - first.t) / 1000;
+    if (dt <= 0 || dt > 0.55) return null;
+    const dx = last.p.x - first.p.x;
+    const dy = last.p.y - first.p.y;
+    if (Math.abs(dx) < 1.8 * pw) return null;
+    if (Math.abs(dy) > 0.9 * pw) return null;
+    const speed = Math.abs(dx / dt);
+    if (speed < 1.2) return null;
+    return dx > 0 ? 'XG_1_3_SWIPE_RIGHT' : 'XG_1_3_SWIPE_LEFT';
   }
 
   // ─────────────────────────────────────────────
@@ -452,6 +594,13 @@
   // ─────────────────────────────────────────────
   // GESTURE RECOGNITION
   // ─────────────────────────────────────────────
+
+  function looksPinchPosture(thumbExt, sI, sM, sR, sP) {
+    const indexExtended = sI > 0.55;
+    const othersRelaxed = sM < 0.60 && sR < 0.60 && sP < 0.60;
+    return !!thumbExt && indexExtended && othersRelaxed;
+  }
+
   function recognizeGesture(hand, w, h) {
     const lms = hand.landmarks;
 
@@ -471,10 +620,12 @@
 
     const allExtended  = thumbExt && indexExt && middleExt && ringExt && pinkyExt;
     const fourExtended = indexExt && middleExt && ringExt && pinkyExt;
+    const pinchPosture = looksPinchPosture(thumbExt, sI, sM, sR, sP);
 
     const handSpread = calcHandSpread(lms, hs);
     const handCurl   = calcHandCurl(lms);
     const pd         = pinchPx(lms[LM.THUMB_TIP], lms[LM.INDEX_TIP], w, h);
+    const pinchThr   = dynamicPinchThresholds(lms, w, h);
 
     const fistResult = classifyFist(lms, w, h);
     hand.fistExtras    = fistResult.extras;
@@ -483,8 +634,9 @@
 
     if (fistResult.isFist && fistResult.confidence >= 0.55) {
       gesture = 'Fist'; confidence = Math.max(0.85, fistResult.confidence);
-    } else if (pd < CONFIG.pinchPx) {
-      gesture = 'Pinch'; confidence = Math.max(0.75, 1 - pd / CONFIG.pinchPx);
+    } else if (pd < pinchThr.start && (pinchPosture || hand.pinching)) {
+      const pinchStartPx = pinchThr.start;
+      gesture = 'Pinch'; confidence = Math.max(0.75, 1 - pd / pinchStartPx);
     } else if ((allExtended || fourExtended) && handCurl < 0.35 && handSpread > 0.35) {
       gesture = 'OpenPalm'; confidence = 0.92;
     } else if (looksLikePoint) {
@@ -623,11 +775,16 @@
       return 0;
     }
 
-    if (!hand._tapArmed && movement >= TAP.minMovement && movement <= TAP.maxMovement) {
+    const entered = movement >= TAP.minMovement;
+    const exited  = movement <= TAP.minMovement * 0.4;
+
+    let armedNow = false;
+    if (!hand._tapArmed && entered && movement <= TAP.maxMovement) {
       hand._tapArmed = true;
+      armedNow = true;
     }
 
-    if (hand._tapArmed && movement >= TAP.minMovement && movement <= TAP.maxMovement) {
+    if (hand._tapArmed && !armedNow && movement >= TAP.minMovement && movement <= TAP.maxMovement) {
       hand._tapArmed  = false;
       hand.baselineSet = false;
       hand.cooldownUntil = now + TAP.cooldownMs;
@@ -641,7 +798,7 @@
     }
 
     if (hand._tapArmed && movement > TAP.maxMovement) hand._tapArmed = false;
-    if (!hand._tapArmed && movement <= TAP.minMovement * 0.4) {
+    if (!hand._tapArmed && exited) {
       hand.zRelBaseline = zRel; hand.baselineTime = now;
       hand.baselinePos  = { nx: hand.palm.nx, ny: hand.palm.ny };
     }
@@ -652,14 +809,15 @@
   // ─────────────────────────────────────────────
   // PINCH & OVERLAP DETECTION
   // ─────────────────────────────────────────────
-  function detectPinch(hand, pd) {
-    if (pd < CONFIG.pinchPx && !hand.pinching) {
+  function detectPinch(hand, pd, w, h) {
+    const thr = dynamicPinchThresholds(hand.landmarks, w, h);
+    if (pd < thr.start && !hand.pinching) {
       hand.pinching = true; hand.pinchStartTime = Date.now(); return 'start';
     }
-    if (pd < CONFIG.pinchPx && hand.pinching) {
-      return Date.now() - hand.pinchStartTime > CONFIG.pinchHoldMs ? 'hold' : null;
-    }
-    if (pd >= CONFIG.pinchPx && hand.pinching) {
+    if (hand.pinching) {
+      if (pd <= thr.end) {
+        return Date.now() - hand.pinchStartTime > CONFIG.pinchHoldMs ? 'hold' : null;
+      }
       hand.pinching = false; return 'end';
     }
     return null;
@@ -689,10 +847,12 @@
         const norm       = normalizeCoords(wrist.x, wrist.y, w, h, CONFIG.mirrorVideo);
 
         let handId = null;
+        let bestDist = Infinity;
+        const matchPx = Math.max(90, Math.min(w, h) * 0.18);
         for (const [id, existing] of state.hands) {
-          if (existing.handedness === handedness && dist2D(norm, existing.palm) < 100) {
-            handId = id; break;
-          }
+          if (existing.handedness !== handedness) continue;
+          const d = dist2D(norm, existing.palm);
+          if (d < matchPx && d < bestDist) { handId = id; bestDist = d; }
         }
         if (!handId) handId = `${handedness}_${Date.now()}`;
 
@@ -720,13 +880,24 @@
         const { gesture, confidence, pinchDist } = recognizeGesture(hand, w, h);
         hand.gesture = gesture; hand.gestureConfidence = confidence; hand.pinchDist = pinchDist;
 
+        const raiseKey = `raise_${hand.id}`;
+        const raiseNow = detectWeGoUpRaise(hand.landmarks, handedness);
+        if (xgConfirmFrames(raiseKey, raiseNow, 3) && xgCooldownReady(`raise_${handedness}`, 500)) {
+          HandInput.emit('xggesture', { name: 'XG_1_1_WE_GO_UP_RAISE', handedness, time: Date.now() });
+        }
+
+        const xgSwipe = detectXgHorizontalSwipe(hand);
+        if (xgSwipe && xgCooldownReady(`swipe_${handedness}`, 550)) {
+          HandInput.emit('xggesture', { name: xgSwipe, handedness, time: Date.now() });
+        }
+
         const swipe = detectSwipe(hand, w, h);
         if (swipe) HandInput.emit('swipe', { direction:swipe.direction, speed:swipe.speed, handedness, time:Date.now() });
 
         const tapCount = detectTap(hand, w, h);
         if (tapCount > 0) HandInput.emit('tap', { count:tapCount, nx:norm.nx, ny:norm.ny, handedness, time:Date.now() });
 
-        const pinchState = detectPinch(hand, pinchDist);
+        const pinchState = detectPinch(hand, pinchDist, w, h);
         if (pinchState) HandInput.emit('pinch', { state:pinchState, distance:pinchDist, nx:norm.nx, ny:norm.ny, handedness, time:Date.now() });
 
         HandInput.emit('handmove', { nx:norm.nx, ny:norm.ny, vx:smoothVx, vy:smoothVy, speed:hand.velocity.speed, z:avgZ, handedness, time:Date.now() });
@@ -749,11 +920,19 @@
       if (!newHands.has(id) && Date.now() - hand.lastSeen < CONFIG.lostTimeoutMs) {
         newHands.set(id, hand);
       }
+      if (!newHands.has(id)) {
+        state.xgSwipeHistory.delete(id);
+        state.xgHoldCounts.delete(`raise_${id}`);
+      }
     }
 
     state.hands = newHands;
 
     const handsArr = Array.from(state.hands.values());
+    const stackNow = handsArr.length >= 2 && detectBowDownStack(handsArr[0], handsArr[1]);
+    if (xgConfirmFrames('stack_pair_confirm', stackNow, 3) && xgCooldownReady('stack_pair', 600)) {
+      HandInput.emit('xggesture', { name: 'XG_1_2_BOW_DOWN_STACK', time: Date.now() });
+    }
     const overlapState = detectOverlap(handsArr);
     if (overlapState) {
       const d = handsArr.length === 2 ? dist2D({ x:handsArr[0].palm.x, y:handsArr[0].palm.y }, { x:handsArr[1].palm.x, y:handsArr[1].palm.y }) : 0;
@@ -913,6 +1092,7 @@
 
   // Swipe flash
   HandInput.on('swipe', ({ direction }) => {
+    if (!CONFIG.visualEffects) return;
     const labels = { left:'← SWIPE LEFT', right:'SWIPE RIGHT →', up:'↑ SWIPE UP', down:'↓ SWIPE DOWN' };
     const el = document.createElement('div');
     el.className = `swipe-flash ${direction}`;
@@ -921,11 +1101,18 @@
     setTimeout(() => el.remove(), 600);
   });
 
+  HandInput.on('xggesture', ({ name }) => {
+    // Intentionally no visual effect for XG 1.1 / 1.2 / 1.3.
+    // Keep event emission for downstream integrations only.
+    void name;
+  });
+
   // Tap orb
   const tapOrb = document.getElementById('tapOrb');
   let hideOrbTimeout;
 
   HandInput.on('tap', ({ nx, ny, count }) => {
+    if (!CONFIG.visualEffects) return;
     const rect = canvas.getBoundingClientRect();
     tapOrb.style.left = `${rect.left + nx*rect.width}px`;
     tapOrb.style.top  = `${rect.top  + ny*rect.height}px`;
@@ -938,6 +1125,7 @@
 
   // Pinch rings
   HandInput.on('pinch', ({ state: ps, nx, ny }) => {
+    if (!CONFIG.visualEffects) return;
     if (!ENABLE_PINCH_VISUALS || ps !== 'start') return;
     const rect = canvas.getBoundingClientRect();
     pinchRings.push({ x: rect.left + nx*rect.width, y: rect.top + ny*rect.height, time: Date.now() });
